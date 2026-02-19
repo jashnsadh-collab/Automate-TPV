@@ -6,18 +6,11 @@ import * as fs from 'fs';
 // Configuration
 // ---------------------------------------------------------------------------
 
-const INPUT_FILE = path.resolve(__dirname, '../../../hdfc_daily_payout_2026-02-13T09_58_04.558625095Z.xlsx');
+const HOME = process.env.HOME || '/Users/apple';
+const UAE_INPUT = path.join(HOME, 'Downloads/input_data_for_tpv_model__uae_2026-02-18T05_47_58.113627555Z.xlsx');
+const UK_INPUT = path.join(HOME, 'Downloads/input_data_for_projections___uk_2026-02-17T05_28_09.362708878Z.xlsx');
 const OUTPUT_FILE = path.resolve(__dirname, '../../../TPV_Projections_UAE_UK.xlsx');
-const PROJECTION_MONTHS = 6;
-
-// Regional split derived from BRS Audit bank-currency volumes:
-// GBP corridors (HDFC GBP + YBL GBP) ≈ 72% of total book value
-// USD corridors (HDFC USD + YBL USD) ≈ 28% of total book value
-// Adjust these if you have more precise regional breakdowns.
-const REGION_SPLITS: Record<string, number> = {
-  UAE: 0.28,
-  UK: 0.72,
-};
+const PROJECTION_DAYS = 180; // ~6 months
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -32,43 +25,39 @@ function parseAmount(raw: any): number {
 
 function parseDate(raw: any): Date | null {
   if (raw == null) return null;
-
-  // XLSX numeric serial date
   if (typeof raw === 'number') {
     const d = XLSX.SSF.parse_date_code(raw);
     return new Date(d.y, d.m - 1, d.d);
   }
-
-  // String: "July 4, 2025, 12:00 AM"
   const str = String(raw).replace(/, 12:00 AM/, '').trim();
   const d = new Date(str);
   return isNaN(d.getTime()) ? null : d;
 }
 
+function formatDate(d: Date): string {
+  return d.toISOString().split('T')[0];
+}
+
+function addDays(d: Date, n: number): Date {
+  const result = new Date(d);
+  result.setDate(result.getDate() + n);
+  return result;
+}
+
 function monthKey(d: Date): string {
-  const y = d.getFullYear();
-  const m = String(d.getMonth() + 1).padStart(2, '0');
-  return `${y}-${m}`;
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
 }
 
-function monthLabel(key: string): string {
-  const [y, m] = key.split('-');
-  const names = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
-  return `${names[parseInt(m, 10) - 1]} ${y}`;
-}
-
-// Simple linear regression: y = slope * x + intercept
 function linearRegression(points: { x: number; y: number }[]): { slope: number; intercept: number; r2: number } {
   const n = points.length;
   if (n === 0) return { slope: 0, intercept: 0, r2: 0 };
 
-  let sumX = 0, sumY = 0, sumXY = 0, sumX2 = 0, sumY2 = 0;
+  let sumX = 0, sumY = 0, sumXY = 0, sumX2 = 0;
   for (const p of points) {
     sumX += p.x;
     sumY += p.y;
     sumXY += p.x * p.y;
     sumX2 += p.x * p.x;
-    sumY2 += p.y * p.y;
   }
 
   const denom = n * sumX2 - sumX * sumX;
@@ -77,7 +66,6 @@ function linearRegression(points: { x: number; y: number }[]): { slope: number; 
   const slope = (n * sumXY - sumX * sumY) / denom;
   const intercept = (sumY - slope * sumX) / n;
 
-  // R² (coefficient of determination)
   const yMean = sumY / n;
   let ssTot = 0, ssRes = 0;
   for (const p of points) {
@@ -89,10 +77,151 @@ function linearRegression(points: { x: number; y: number }[]): { slope: number; 
   return { slope, intercept, r2 };
 }
 
-function addMonths(key: string, n: number): string {
-  const [y, m] = key.split('-').map(Number);
-  const d = new Date(y, m - 1 + n, 1);
-  return monthKey(d);
+// ---------------------------------------------------------------------------
+// Data loading
+// ---------------------------------------------------------------------------
+
+interface DailyRecord {
+  date: Date;
+  totalSendAmount: number;
+  transactions: number;
+  users: number;
+}
+
+interface CategoryDaily {
+  date: Date;
+  category: string;
+  totalSendAmount: number;
+  transactions: number;
+  users: number;
+}
+
+function loadUAE(filePath: string): { daily: Map<string, DailyRecord>; byCategory: CategoryDaily[] } {
+  const wb = XLSX.readFile(filePath);
+  const ws = wb.Sheets[wb.SheetNames[0]];
+  const rows: any[] = XLSX.utils.sheet_to_json(ws, { defval: '' });
+
+  const daily = new Map<string, DailyRecord>();
+  const byCategory: CategoryDaily[] = [];
+
+  for (const row of rows) {
+    const date = parseDate(row['transaction_date']);
+    if (!date) continue;
+
+    const amount = parseAmount(row['total_send_amount']);
+    const txns = parseAmount(row['number_of_transactions']);
+    const users = parseAmount(row['transacting_users']);
+    const category = String(row['user_category'] || 'Unknown');
+    const key = formatDate(date);
+
+    byCategory.push({ date, category, totalSendAmount: amount, transactions: txns, users });
+
+    const existing = daily.get(key) || { date, totalSendAmount: 0, transactions: 0, users: 0 };
+    existing.totalSendAmount += amount;
+    existing.transactions += txns;
+    existing.users += users;
+    daily.set(key, existing);
+  }
+
+  return { daily, byCategory };
+}
+
+function loadUK(filePath: string): { daily: Map<string, DailyRecord>; byCategory: CategoryDaily[] } {
+  const wb = XLSX.readFile(filePath);
+  const ws = wb.Sheets[wb.SheetNames[0]];
+  const rows: any[] = XLSX.utils.sheet_to_json(ws, { defval: '' });
+
+  const daily = new Map<string, DailyRecord>();
+  const byCategory: CategoryDaily[] = [];
+
+  // UK data has time segments per category per day — aggregate to daily per category first
+  const catDayMap = new Map<string, CategoryDaily>();
+
+  for (const row of rows) {
+    const date = parseDate(row['transaction_date']);
+    if (!date) continue;
+
+    const amount = parseAmount(row['total_send_amount']);
+    const txns = parseAmount(row['number_of_transactions']);
+    const users = parseAmount(row['transacting_users']);
+    const category = String(row['user_category'] || 'Unknown');
+    const key = `${formatDate(date)}|${category}`;
+
+    const existing = catDayMap.get(key) || { date, category, totalSendAmount: 0, transactions: 0, users: 0 };
+    existing.totalSendAmount += amount;
+    existing.transactions += txns;
+    existing.users += users;
+    catDayMap.set(key, existing);
+  }
+
+  for (const entry of catDayMap.values()) {
+    byCategory.push(entry);
+    const key = formatDate(entry.date);
+    const existing = daily.get(key) || { date: entry.date, totalSendAmount: 0, transactions: 0, users: 0 };
+    existing.totalSendAmount += entry.totalSendAmount;
+    existing.transactions += entry.transactions;
+    existing.users += entry.users;
+    daily.set(key, existing);
+  }
+
+  return { daily, byCategory };
+}
+
+// ---------------------------------------------------------------------------
+// Projection
+// ---------------------------------------------------------------------------
+
+interface ProjectionResult {
+  historical: { date: Date; amount: number; txns: number; users: number }[];
+  projected: { date: Date; amount: number; txns: number; users: number }[];
+  regression: { slope: number; intercept: number; r2: number };
+  txnRegression: { slope: number; intercept: number; r2: number };
+  userRegression: { slope: number; intercept: number; r2: number };
+}
+
+function projectRegion(daily: Map<string, DailyRecord>): ProjectionResult {
+  const sorted = [...daily.values()].sort((a, b) => a.date.getTime() - b.date.getTime());
+  const firstDate = sorted[0].date;
+
+  const amountPoints = sorted.map((d) => ({
+    x: Math.round((d.date.getTime() - firstDate.getTime()) / 86400000),
+    y: d.totalSendAmount,
+  }));
+  const txnPoints = sorted.map((d) => ({
+    x: Math.round((d.date.getTime() - firstDate.getTime()) / 86400000),
+    y: d.transactions,
+  }));
+  const userPoints = sorted.map((d) => ({
+    x: Math.round((d.date.getTime() - firstDate.getTime()) / 86400000),
+    y: d.users,
+  }));
+
+  const regression = linearRegression(amountPoints);
+  const txnRegression = linearRegression(txnPoints);
+  const userRegression = linearRegression(userPoints);
+
+  const lastDate = sorted[sorted.length - 1].date;
+  const lastDayIdx = Math.round((lastDate.getTime() - firstDate.getTime()) / 86400000);
+
+  const projected: { date: Date; amount: number; txns: number; users: number }[] = [];
+  for (let i = 1; i <= PROJECTION_DAYS; i++) {
+    const dayIdx = lastDayIdx + i;
+    projected.push({
+      date: addDays(lastDate, i),
+      amount: Math.max(0, regression.slope * dayIdx + regression.intercept),
+      txns: Math.max(0, txnRegression.slope * dayIdx + txnRegression.intercept),
+      users: Math.max(0, userRegression.slope * dayIdx + userRegression.intercept),
+    });
+  }
+
+  const historical = sorted.map((d) => ({
+    date: d.date,
+    amount: d.totalSendAmount,
+    txns: d.transactions,
+    users: d.users,
+  }));
+
+  return { historical, projected, regression, txnRegression, userRegression };
 }
 
 // ---------------------------------------------------------------------------
@@ -100,198 +229,211 @@ function addMonths(key: string, n: number): string {
 // ---------------------------------------------------------------------------
 
 function main() {
-  // 1. Read input
-  if (!fs.existsSync(INPUT_FILE)) {
-    console.error(`Input file not found: ${INPUT_FILE}`);
-    process.exit(1);
-  }
-
-  const wb = XLSX.readFile(INPUT_FILE);
-  const ws = wb.Sheets[wb.SheetNames[0]];
-  const rows: any[] = XLSX.utils.sheet_to_json(ws, { defval: '' });
-
-  console.log(`Read ${rows.length} daily records from input.`);
-
-  // 2. Parse and aggregate monthly
-  const monthly = new Map<string, number>();
-
-  for (const row of rows) {
-    const dateRaw = row['day'] ?? row['Day'] ?? row[Object.keys(row)[0]];
-    const amountRaw = row['total_transfer_amount'] ?? row['Total Transfer Amount'] ?? row[Object.keys(row)[1]];
-
-    const date = parseDate(dateRaw);
-    if (!date) continue;
-
-    const amount = parseAmount(amountRaw);
-    if (amount <= 0) continue;
-
-    const key = monthKey(date);
-    monthly.set(key, (monthly.get(key) || 0) + amount);
-  }
-
-  const sortedKeys = [...monthly.keys()].sort();
-  console.log(`Aggregated into ${sortedKeys.length} months: ${sortedKeys[0]} to ${sortedKeys[sortedKeys.length - 1]}`);
-
-  // 3. Linear regression on total monthly TPV
-  const points = sortedKeys.map((key, i) => ({ x: i, y: monthly.get(key)! }));
-  const totalReg = linearRegression(points);
-  console.log(`Total TPV trend — slope: ${(totalReg.slope / 1e6).toFixed(2)}M/month, R²: ${totalReg.r2.toFixed(4)}`);
-
-  // 4. Project 6 months forward
-  const lastKey = sortedKeys[sortedKeys.length - 1];
-  const baseIndex = sortedKeys.length;
-
-  const projectedKeys: string[] = [];
-  const projectedTotal: number[] = [];
-  for (let i = 0; i < PROJECTION_MONTHS; i++) {
-    const key = addMonths(lastKey, i + 1);
-    const value = Math.max(0, totalReg.slope * (baseIndex + i) + totalReg.intercept);
-    projectedKeys.push(key);
-    projectedTotal.push(value);
-  }
-
-  // 5. Build regional splits
-  const regions = Object.keys(REGION_SPLITS);
-
-  // Per-region regression for historical
-  const regionHistorical: Record<string, number[]> = {};
-  const regionProjected: Record<string, number[]> = {};
-  const regionRegression: Record<string, { slope: number; intercept: number; r2: number }> = {};
-
-  for (const region of regions) {
-    const split = REGION_SPLITS[region];
-    const hist = sortedKeys.map((k) => monthly.get(k)! * split);
-    regionHistorical[region] = hist;
-
-    const rPoints = hist.map((y, i) => ({ x: i, y }));
-    const reg = linearRegression(rPoints);
-    regionRegression[region] = reg;
-
-    const proj: number[] = [];
-    for (let i = 0; i < PROJECTION_MONTHS; i++) {
-      proj.push(Math.max(0, reg.slope * (baseIndex + i) + reg.intercept));
+  for (const [label, f] of [['UAE', UAE_INPUT], ['UK', UK_INPUT]] as const) {
+    if (!fs.existsSync(f)) {
+      console.error(`${label} input file not found: ${f}`);
+      process.exit(1);
     }
-    regionProjected[region] = proj;
   }
 
-  // 6. Build output workbook
+  console.log('Loading UAE data...');
+  const uae = loadUAE(UAE_INPUT);
+  console.log(`  ${uae.daily.size} daily records, ${uae.byCategory.length} category rows`);
+
+  console.log('Loading UK data...');
+  const uk = loadUK(UK_INPUT);
+  console.log(`  ${uk.daily.size} daily records, ${uk.byCategory.length} category rows`);
+
+  console.log('\nRunning projections...');
+  const uaeProj = projectRegion(uae.daily);
+  const ukProj = projectRegion(uk.daily);
+
+  console.log(`UAE — slope: ${(uaeProj.regression.slope).toFixed(2)}/day, R²: ${uaeProj.regression.r2.toFixed(4)}`);
+  console.log(`UK  — slope: ${(ukProj.regression.slope).toFixed(2)}/day, R²: ${ukProj.regression.r2.toFixed(4)}`);
+
+  // Build output workbook
   const outWb = XLSX.utils.book_new();
 
-  // --- Summary sheet ---
+  // --- Combined Summary (daily) ---
   const summaryData: any[] = [];
-  // Historical
-  for (let i = 0; i < sortedKeys.length; i++) {
-    const row: any = {
-      Month: monthLabel(sortedKeys[i]),
-      'Month Key': sortedKeys[i],
-      Type: 'Historical',
-      'Total TPV': Math.round(monthly.get(sortedKeys[i])!),
-    };
-    for (const region of regions) {
-      row[`${region} TPV`] = Math.round(regionHistorical[region][i]);
-    }
-    summaryData.push(row);
-  }
-  // Projected
-  for (let i = 0; i < PROJECTION_MONTHS; i++) {
-    const row: any = {
-      Month: monthLabel(projectedKeys[i]),
-      'Month Key': projectedKeys[i],
-      Type: 'Projected',
-      'Total TPV': Math.round(projectedTotal[i]),
-    };
-    for (const region of regions) {
-      row[`${region} TPV`] = Math.round(regionProjected[region][i]);
-    }
-    summaryData.push(row);
-  }
-  const summaryWs = XLSX.utils.json_to_sheet(summaryData);
-  summaryWs['!cols'] = [
-    { wch: 12 }, { wch: 10 }, { wch: 12 },
-    { wch: 20 }, { wch: 20 }, { wch: 20 },
-  ];
-  XLSX.utils.book_append_sheet(outWb, summaryWs, 'Summary');
 
-  // --- Per-region sheets ---
-  for (const region of regions) {
-    const data: any[] = [];
-    for (let i = 0; i < sortedKeys.length; i++) {
-      data.push({
-        Month: monthLabel(sortedKeys[i]),
-        'Month Key': sortedKeys[i],
-        Type: 'Historical',
-        'Monthly TPV': Math.round(regionHistorical[region][i]),
-        'Trend Line': Math.round(regionRegression[region].slope * i + regionRegression[region].intercept),
-      });
-    }
-    for (let i = 0; i < PROJECTION_MONTHS; i++) {
-      data.push({
-        Month: monthLabel(projectedKeys[i]),
-        'Month Key': projectedKeys[i],
-        Type: 'Projected',
-        'Monthly TPV': Math.round(regionProjected[region][i]),
-        'Trend Line': Math.round(regionRegression[region].slope * (baseIndex + i) + regionRegression[region].intercept),
-      });
-    }
-    const ws = XLSX.utils.json_to_sheet(data);
-    ws['!cols'] = [{ wch: 12 }, { wch: 10 }, { wch: 12 }, { wch: 20 }, { wch: 16 }];
-    XLSX.utils.book_append_sheet(outWb, ws, `${region} Projection`);
+  // Build a date-keyed map for both regions
+  const allDates = new Map<string, { uaeAmt: number; ukAmt: number; type: string }>();
+
+  for (const d of uaeProj.historical) {
+    const key = formatDate(d.date);
+    const entry = allDates.get(key) || { uaeAmt: 0, ukAmt: 0, type: 'Historical' };
+    entry.uaeAmt = d.amount;
+    allDates.set(key, entry);
+  }
+  for (const d of ukProj.historical) {
+    const key = formatDate(d.date);
+    const entry = allDates.get(key) || { uaeAmt: 0, ukAmt: 0, type: 'Historical' };
+    entry.ukAmt = d.amount;
+    allDates.set(key, entry);
+  }
+  for (const d of uaeProj.projected) {
+    const key = formatDate(d.date);
+    const entry = allDates.get(key) || { uaeAmt: 0, ukAmt: 0, type: 'Projected' };
+    entry.type = 'Projected';
+    entry.uaeAmt = d.amount;
+    allDates.set(key, entry);
+  }
+  for (const d of ukProj.projected) {
+    const key = formatDate(d.date);
+    const entry = allDates.get(key) || { uaeAmt: 0, ukAmt: 0, type: 'Projected' };
+    entry.type = 'Projected';
+    entry.ukAmt = d.amount;
+    allDates.set(key, entry);
   }
 
-  // --- Regression stats sheet ---
-  const statsData = [
-    {
-      Region: 'Total',
-      'Slope (per month)': Math.round(totalReg.slope),
-      'Intercept': Math.round(totalReg.intercept),
-      'R²': parseFloat(totalReg.r2.toFixed(6)),
-      'Split %': '100%',
-    },
-    ...regions.map((r) => ({
-      Region: r,
-      'Slope (per month)': Math.round(regionRegression[r].slope),
-      'Intercept': Math.round(regionRegression[r].intercept),
-      'R²': parseFloat(regionRegression[r].r2.toFixed(6)),
-      'Split %': `${(REGION_SPLITS[r] * 100).toFixed(0)}%`,
-    })),
-  ];
-  const statsWs = XLSX.utils.json_to_sheet(statsData);
-  statsWs['!cols'] = [{ wch: 10 }, { wch: 20 }, { wch: 20 }, { wch: 10 }, { wch: 10 }];
-  XLSX.utils.book_append_sheet(outWb, statsWs, 'Regression Stats');
-
-  // --- Daily raw data sheet ---
-  const dailyData: any[] = [];
-  for (const row of rows) {
-    const dateRaw = row['day'] ?? row['Day'] ?? row[Object.keys(row)[0]];
-    const amountRaw = row['total_transfer_amount'] ?? row['Total Transfer Amount'] ?? row[Object.keys(row)[1]];
-    const date = parseDate(dateRaw);
-    if (!date) continue;
-    const amount = parseAmount(amountRaw);
-    if (amount <= 0) continue;
-    dailyData.push({
-      Date: date.toISOString().split('T')[0],
-      'Total TPV': Math.round(amount),
-      'UAE TPV': Math.round(amount * REGION_SPLITS.UAE),
-      'UK TPV': Math.round(amount * REGION_SPLITS.UK),
+  for (const [dateStr, val] of [...allDates.entries()].sort()) {
+    summaryData.push({
+      Date: dateStr,
+      Type: val.type,
+      'UAE TPV': Math.round(val.uaeAmt),
+      'UK TPV': Math.round(val.ukAmt),
+      'Total TPV': Math.round(val.uaeAmt + val.ukAmt),
     });
   }
-  const dailyWs = XLSX.utils.json_to_sheet(dailyData);
-  dailyWs['!cols'] = [{ wch: 12 }, { wch: 18 }, { wch: 18 }, { wch: 18 }];
-  XLSX.utils.book_append_sheet(outWb, dailyWs, 'Daily Data');
 
-  // 7. Write output
+  const summaryWs = XLSX.utils.json_to_sheet(summaryData);
+  summaryWs['!cols'] = [{ wch: 12 }, { wch: 12 }, { wch: 18 }, { wch: 18 }, { wch: 18 }];
+  XLSX.utils.book_append_sheet(outWb, summaryWs, 'Daily Summary');
+
+  // --- UAE Detail sheet ---
+  const uaeData: any[] = [];
+  for (const d of uaeProj.historical) {
+    uaeData.push({
+      Date: formatDate(d.date),
+      Type: 'Historical',
+      'Daily TPV': Math.round(d.amount),
+      Transactions: Math.round(d.txns),
+      Users: Math.round(d.users),
+    });
+  }
+  for (const d of uaeProj.projected) {
+    uaeData.push({
+      Date: formatDate(d.date),
+      Type: 'Projected',
+      'Daily TPV': Math.round(d.amount),
+      Transactions: Math.round(d.txns),
+      Users: Math.round(d.users),
+    });
+  }
+  const uaeWs = XLSX.utils.json_to_sheet(uaeData);
+  uaeWs['!cols'] = [{ wch: 12 }, { wch: 12 }, { wch: 18 }, { wch: 14 }, { wch: 10 }];
+  XLSX.utils.book_append_sheet(outWb, uaeWs, 'UAE Projection');
+
+  // --- UK Detail sheet ---
+  const ukData: any[] = [];
+  for (const d of ukProj.historical) {
+    ukData.push({
+      Date: formatDate(d.date),
+      Type: 'Historical',
+      'Daily TPV': Math.round(d.amount),
+      Transactions: Math.round(d.txns),
+      Users: Math.round(d.users),
+    });
+  }
+  for (const d of ukProj.projected) {
+    ukData.push({
+      Date: formatDate(d.date),
+      Type: 'Projected',
+      'Daily TPV': Math.round(d.amount),
+      Transactions: Math.round(d.txns),
+      Users: Math.round(d.users),
+    });
+  }
+  const ukWs = XLSX.utils.json_to_sheet(ukData);
+  ukWs['!cols'] = [{ wch: 12 }, { wch: 12 }, { wch: 18 }, { wch: 14 }, { wch: 10 }];
+  XLSX.utils.book_append_sheet(outWb, ukWs, 'UK Projection');
+
+  // --- UAE by Category sheet ---
+  const uaeCatAgg = new Map<string, { date: Date; category: string; amount: number }>();
+  for (const c of uae.byCategory) {
+    const key = `${formatDate(c.date)}|${c.category}`;
+    const existing = uaeCatAgg.get(key) || { date: c.date, category: c.category, amount: 0 };
+    existing.amount += c.totalSendAmount;
+    uaeCatAgg.set(key, existing);
+  }
+  const uaeCatData = [...uaeCatAgg.values()]
+    .sort((a, b) => b.date.getTime() - a.date.getTime() || a.category.localeCompare(b.category))
+    .map((d) => ({
+      Date: formatDate(d.date),
+      Category: d.category,
+      'Daily TPV': Math.round(d.amount),
+    }));
+  const uaeCatWs = XLSX.utils.json_to_sheet(uaeCatData);
+  uaeCatWs['!cols'] = [{ wch: 12 }, { wch: 14 }, { wch: 18 }];
+  XLSX.utils.book_append_sheet(outWb, uaeCatWs, 'UAE by Category');
+
+  // --- UK by Category sheet ---
+  const ukCatData = [...uk.byCategory]
+    .sort((a, b) => b.date.getTime() - a.date.getTime() || a.category.localeCompare(b.category))
+    .map((d) => ({
+      Date: formatDate(d.date),
+      Category: d.category,
+      'Daily TPV': Math.round(d.totalSendAmount),
+    }));
+  const ukCatWs = XLSX.utils.json_to_sheet(ukCatData);
+  ukCatWs['!cols'] = [{ wch: 12 }, { wch: 14 }, { wch: 18 }];
+  XLSX.utils.book_append_sheet(outWb, ukCatWs, 'UK by Category');
+
+  // --- Monthly Summary ---
+  const monthlyMap = new Map<string, { uae: number; uk: number; type: string }>();
+  const monthNames = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+
+  for (const [dateStr, val] of allDates) {
+    const d = new Date(dateStr);
+    const mk = monthKey(d);
+    const entry = monthlyMap.get(mk) || { uae: 0, uk: 0, type: val.type };
+    if (val.type === 'Projected') entry.type = 'Projected';
+    entry.uae += val.uaeAmt;
+    entry.uk += val.ukAmt;
+    monthlyMap.set(mk, entry);
+  }
+
+  const monthlyData = [...monthlyMap.entries()].sort().map(([mk, val]) => {
+    const [y, m] = mk.split('-');
+    return {
+      Month: `${monthNames[parseInt(m, 10) - 1]} ${y}`,
+      Type: val.type,
+      'UAE TPV': Math.round(val.uae),
+      'UK TPV': Math.round(val.uk),
+      'Total TPV': Math.round(val.uae + val.uk),
+    };
+  });
+  const monthlyWs = XLSX.utils.json_to_sheet(monthlyData);
+  monthlyWs['!cols'] = [{ wch: 12 }, { wch: 12 }, { wch: 18 }, { wch: 18 }, { wch: 18 }];
+  XLSX.utils.book_append_sheet(outWb, monthlyWs, 'Monthly Summary');
+
+  // --- Regression Stats ---
+  const statsData = [
+    { Region: 'UAE', Metric: 'TPV', 'Slope (per day)': uaeProj.regression.slope.toFixed(2), Intercept: Math.round(uaeProj.regression.intercept), 'R²': uaeProj.regression.r2.toFixed(6) },
+    { Region: 'UAE', Metric: 'Transactions', 'Slope (per day)': uaeProj.txnRegression.slope.toFixed(2), Intercept: Math.round(uaeProj.txnRegression.intercept), 'R²': uaeProj.txnRegression.r2.toFixed(6) },
+    { Region: 'UAE', Metric: 'Users', 'Slope (per day)': uaeProj.userRegression.slope.toFixed(2), Intercept: Math.round(uaeProj.userRegression.intercept), 'R²': uaeProj.userRegression.r2.toFixed(6) },
+    { Region: 'UK', Metric: 'TPV', 'Slope (per day)': ukProj.regression.slope.toFixed(2), Intercept: Math.round(ukProj.regression.intercept), 'R²': ukProj.regression.r2.toFixed(6) },
+    { Region: 'UK', Metric: 'Transactions', 'Slope (per day)': ukProj.txnRegression.slope.toFixed(2), Intercept: Math.round(ukProj.txnRegression.intercept), 'R²': ukProj.txnRegression.r2.toFixed(6) },
+    { Region: 'UK', Metric: 'Users', 'Slope (per day)': ukProj.userRegression.slope.toFixed(2), Intercept: Math.round(ukProj.userRegression.intercept), 'R²': ukProj.userRegression.r2.toFixed(6) },
+  ];
+  const statsWs = XLSX.utils.json_to_sheet(statsData);
+  statsWs['!cols'] = [{ wch: 8 }, { wch: 14 }, { wch: 16 }, { wch: 16 }, { wch: 12 }];
+  XLSX.utils.book_append_sheet(outWb, statsWs, 'Regression Stats');
+
+  // Write output
   XLSX.writeFile(outWb, OUTPUT_FILE);
   console.log(`\nOutput written to: ${OUTPUT_FILE}`);
-  console.log(`\nProjections (${PROJECTION_MONTHS} months):`);
-  console.log('─'.repeat(70));
-  console.log(`${'Month'.padEnd(12)} ${'Total TPV'.padStart(18)} ${'UAE TPV'.padStart(18)} ${'UK TPV'.padStart(18)}`);
-  console.log('─'.repeat(70));
-  for (let i = 0; i < PROJECTION_MONTHS; i++) {
-    const total = Math.round(projectedTotal[i]);
-    const uae = Math.round(regionProjected['UAE'][i]);
-    const uk = Math.round(regionProjected['UK'][i]);
+
+  // Print monthly summary
+  console.log(`\nMonthly Summary (last 6 historical + ${PROJECTION_DAYS}-day projection):`);
+  console.log('─'.repeat(82));
+  console.log(`${'Month'.padEnd(12)} ${'Type'.padEnd(12)} ${'UAE TPV'.padStart(18)} ${'UK TPV'.padStart(18)} ${'Total TPV'.padStart(18)}`);
+  console.log('─'.repeat(82));
+  const lastMonths = monthlyData.slice(-12);
+  for (const row of lastMonths) {
     console.log(
-      `${monthLabel(projectedKeys[i]).padEnd(12)} ${total.toLocaleString().padStart(18)} ${uae.toLocaleString().padStart(18)} ${uk.toLocaleString().padStart(18)}`
+      `${row.Month.padEnd(12)} ${row.Type.padEnd(12)} ${row['UAE TPV'].toLocaleString().padStart(18)} ${row['UK TPV'].toLocaleString().padStart(18)} ${row['Total TPV'].toLocaleString().padStart(18)}`
     );
   }
 }
