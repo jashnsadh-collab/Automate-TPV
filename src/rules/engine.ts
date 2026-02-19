@@ -75,17 +75,21 @@ function evaluateCondition(condition: string, context: Record<string, any>): boo
   const fieldValue = context[fieldName];
   if (fieldValue === undefined) return false;
 
+  // Resolve the right-hand side: if it's a context field name, use its value
+  const resolvedRaw = context[rawValue] !== undefined ? context[rawValue] : rawValue;
+
   // Coerce to number if both sides are numeric
   const numField = Number(fieldValue);
-  const numValue = Number(rawValue);
+  const numValue = Number(resolvedRaw);
   const useNumbers = !isNaN(numField) && !isNaN(numValue);
 
   const left = useNumbers ? numField : String(fieldValue);
-  const right = useNumbers ? numValue : rawValue;
+  const right = useNumbers ? numValue : String(resolvedRaw);
 
   // Handle boolean string comparison
-  if (rawValue === 'true' || rawValue === 'false') {
-    const boolValue = rawValue === 'true';
+  const boolStr = String(resolvedRaw);
+  if (boolStr === 'true' || boolStr === 'false') {
+    const boolValue = boolStr === 'true';
     if (operator === '==') return fieldValue === boolValue;
     if (operator === '!=') return fieldValue !== boolValue;
   }
