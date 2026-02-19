@@ -3,14 +3,19 @@ import fs from 'fs';
 import path from 'path';
 
 async function migrate() {
-  const schemaPath = path.join(__dirname, '../../../..', 'schema_v1.sql');
-  let sql: string;
-  try {
-    sql = fs.readFileSync(schemaPath, 'utf-8');
-  } catch {
-    // Try sibling path
-    const altPath = path.join(__dirname, '../../../../schema_v1.sql');
-    sql = fs.readFileSync(altPath, 'utf-8');
+  // Schema lives in the parent of the backend directory
+  const candidates = [
+    path.join(__dirname, '../../..', 'schema_v1.sql'),       // from src/db/ -> New project/
+    path.join(__dirname, '../../../..', 'schema_v1.sql'),     // extra level
+    path.resolve(process.cwd(), '..', 'schema_v1.sql'),      // from backend/ cwd -> New project/
+  ];
+  let sql: string | undefined;
+  for (const p of candidates) {
+    if (fs.existsSync(p)) { sql = fs.readFileSync(p, 'utf-8'); break; }
+  }
+  if (!sql) {
+    console.error('schema_v1.sql not found. Tried:', candidates);
+    process.exit(1);
   }
 
   const client = await pool.connect();

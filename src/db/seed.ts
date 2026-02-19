@@ -1,4 +1,4 @@
-import { pool, query } from './pool';
+import { pool } from './pool';
 
 async function seed() {
   const client = await pool.connect();
@@ -43,7 +43,10 @@ async function seed() {
       ON CONFLICT (company_id, category_code) DO UPDATE SET category_name = EXCLUDED.category_name
       RETURNING category_id, category_code
     `, [companyId]);
-    const itHwCatId = catRes.rows.find((r: any) => r.category_code === 'IT_HW')?.category_id;
+    const categories: Record<string, string> = {};
+    for (const row of catRes.rows) {
+      categories[row.category_code] = row.category_id;
+    }
 
     // Users
     const users = [
@@ -77,14 +80,105 @@ async function seed() {
     }
 
     // Budget
-    await client.query(`
+    const budgetRes = await client.query(`
       INSERT INTO budget (company_id, budget_name, fiscal_year, period_type, version_no, status, currency, valid_from, valid_to)
       VALUES ($1, 'FY2026 Annual Budget', 2026, 'ANNUAL', 1, 'ACTIVE', 'USD', '2026-01-01', '2026-12-31')
       ON CONFLICT (company_id, fiscal_year, period_type, version_no) DO UPDATE SET status = EXCLUDED.status
+      RETURNING budget_id
     `, [companyId]);
+    const budgetId = budgetRes.rows[0].budget_id;
+
+    // Budget lines — one per category for the IT cost center
+    const budgetLines = [
+      { categoryCode: 'IT_HW', allocated: 500000 },
+      { categoryCode: 'IT_SW', allocated: 300000 },
+      { categoryCode: 'OFFICE', allocated: 100000 },
+      { categoryCode: 'CONSULT', allocated: 200000 },
+    ];
+    for (const bl of budgetLines) {
+      const catId = categories[bl.categoryCode];
+      if (!catId) continue;
+      await client.query(`
+        INSERT INTO budget_line (budget_id, cost_center_id, category_id, allocated_amount)
+        VALUES ($1, $2, $3, $4)
+        ON CONFLICT (budget_id, cost_center_id, category_id, project_code)
+        DO UPDATE SET allocated_amount = EXCLUDED.allocated_amount
+      `, [budgetId, costCenterId, catId, bl.allocated]);
+    }
+
+    // Policy rules — from workflow_rules_template_v1.yaml
+    const policyRules = [
+      {
+        ruleCode: 'VENDOR_AUTO_APPROVE_LOW_RISK',
+        scope: 'VENDOR',
+        priority: 10,
+        expression: { whenAll: ['riskScore >= 80', 'countMissingDocuments == 0', 'sanctionsHit == false', 'bankAccountVerified == true'] },
+        outcome: { action: 'AUTO_APPROVE', finalStatus: 'APPROVED' },
+      },
+      {
+        ruleCode: 'VENDOR_MANUAL_REVIEW_MEDIUM_RISK',
+        scope: 'VENDOR',
+        priority: 20,
+        expression: { whenAll: ['riskScore >= 60', 'riskScore < 80'] },
+        outcome: { action: 'ROUTE_APPROVAL', routeToRoles: ['COMPLIANCE_OFFICER', 'PROCUREMENT_HEAD'] },
+      },
+      {
+        ruleCode: 'VENDOR_AUTO_REJECT_HIGH_RISK',
+        scope: 'VENDOR',
+        priority: 30,
+        expression: { whenAny: ['riskScore < 60', 'sanctionsHit == true'] },
+        outcome: { action: 'AUTO_REJECT', rejectReasonCode: 'RISK_POLICY_FAILED' },
+      },
+      {
+        ruleCode: 'PO_AUTO_APPROVE_LOW_VALUE',
+        scope: 'REQUISITION',
+        priority: 10,
+        expression: { whenAll: ['totalAmount <= 2000', 'budgetAvailable == true', "vendorStatus in ['APPROVED','ACTIVE']", 'vendorRiskScore >= 80'] },
+        outcome: { action: 'AUTO_APPROVE' },
+      },
+      {
+        ruleCode: 'PO_REJECT_NO_BUDGET',
+        scope: 'REQUISITION',
+        priority: 20,
+        expression: { whenAll: ['budgetAvailable == false', "budgetControlMode == 'HARD_STOP'"] },
+        outcome: { action: 'AUTO_REJECT', rejectReasonCode: 'BUDGET_EXCEEDED' },
+      },
+      {
+        ruleCode: 'INVOICE_AUTO_POST',
+        scope: 'INVOICE',
+        priority: 10,
+        expression: { whenAll: ['duplicateInvoiceFound == false', 'matchPassed == true', 'priceVariancePercent <= priceTolerancePercent', 'qtyVariancePercent <= quantityTolerancePercent'] },
+        outcome: { action: 'AUTO_APPROVE_FOR_PAYMENT' },
+      },
+      {
+        ruleCode: 'INVOICE_EXCEPTION_QUEUE',
+        scope: 'INVOICE',
+        priority: 20,
+        expression: { whenAny: ['matchPassed == false', 'priceVariancePercent > priceTolerancePercent', 'qtyVariancePercent > quantityTolerancePercent'] },
+        outcome: { action: 'ROUTE_EXCEPTION', routeToRoles: ['AP_MANAGER', 'BUYER'] },
+      },
+      {
+        ruleCode: 'INVOICE_REJECT_DUPLICATE',
+        scope: 'INVOICE',
+        priority: 30,
+        expression: { whenAll: ['duplicateInvoiceFound == true'] },
+        outcome: { action: 'AUTO_REJECT', rejectReasonCode: 'DUPLICATE_INVOICE' },
+      },
+    ];
+
+    for (const rule of policyRules) {
+      await client.query(`
+        INSERT INTO policy_rule (company_id, rule_code, scope, priority, is_active, expression_json, outcome_json)
+        VALUES ($1, $2, $3, $4, TRUE, $5, $6)
+        ON CONFLICT (company_id, rule_code) DO UPDATE SET
+          expression_json = EXCLUDED.expression_json,
+          outcome_json = EXCLUDED.outcome_json,
+          priority = EXCLUDED.priority
+      `, [companyId, rule.ruleCode, rule.scope, rule.priority, JSON.stringify(rule.expression), JSON.stringify(rule.outcome)]);
+    }
 
     await client.query('COMMIT');
-    console.log('Demo data seeded successfully.');
+    console.log('Demo data seeded successfully (with budget lines + policy rules).');
   } catch (err) {
     await client.query('ROLLBACK');
     console.error('Seed error:', err);
