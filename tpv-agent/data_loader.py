@@ -1,6 +1,8 @@
 import pandas as pd
 import numpy as np
-from config import DATA_FILE
+from config.settings import settings
+
+DATA_FILE = settings.data_file
 
 
 def load_daily_summary() -> pd.DataFrame:

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""TPV Predictions Web Dashboard — UAE/UK markets."""
+"""TPV Predictions Web Dashboard — UAE/UK markets with AI Agent integration."""
 
 import sys, os
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -8,6 +8,7 @@ from datetime import datetime, timedelta
 from flask import Flask, render_template_string, jsonify, request
 import pandas as pd
 import numpy as np
+import markdown as md_lib
 
 from config import REGIONS, CATEGORIES, FORECAST_DAYS
 from data_loader import (
@@ -15,8 +16,12 @@ from data_loader import (
     load_monthly_summary, load_regression_stats,
 )
 from models import EnsembleForecaster
+from ai_agent import run_ai_agent, prepare_data_context, save_ai_report
 
 app = Flask(__name__)
+
+# Store the API key in memory after first entry
+_api_key_store = {"key": os.environ.get("ANTHROPIC_API_KEY", "")}
 
 HTML_TEMPLATE = """
 <!DOCTYPE html>
@@ -28,12 +33,18 @@ HTML_TEMPLATE = """
 <style>
   * { margin: 0; padding: 0; box-sizing: border-box; }
   body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #0f172a; color: #e2e8f0; min-height: 100vh; }
-  .header { background: linear-gradient(135deg, #1e293b 0%, #0f172a 100%); border-bottom: 1px solid #334155; padding: 24px 40px; }
-  .header h1 { font-size: 24px; font-weight: 700; color: #f8fafc; }
-  .header p { color: #94a3b8; font-size: 14px; margin-top: 4px; }
+  .header { background: linear-gradient(135deg, #1e293b 0%, #0f172a 100%); border-bottom: 1px solid #334155; padding: 24px 40px; display: flex; justify-content: space-between; align-items: center; }
+  .header-left h1 { font-size: 24px; font-weight: 700; color: #f8fafc; }
+  .header-left p { color: #94a3b8; font-size: 14px; margin-top: 4px; }
+  .header-right { display: flex; gap: 12px; align-items: center; }
+  .nav-btn { padding: 10px 20px; border-radius: 8px; font-size: 14px; font-weight: 600; cursor: pointer; border: none; transition: all 0.2s; }
+  .nav-btn-active { background: #3b82f6; color: white; }
+  .nav-btn-inactive { background: #334155; color: #94a3b8; }
+  .nav-btn-inactive:hover { background: #475569; color: #e2e8f0; }
+  .nav-btn-ai { background: linear-gradient(135deg, #8b5cf6, #6366f1); color: white; }
+  .nav-btn-ai:hover { background: linear-gradient(135deg, #7c3aed, #4f46e5); }
   .container { max-width: 1400px; margin: 0 auto; padding: 24px 40px; }
   .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; margin-bottom: 20px; }
-  .grid-3 { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 20px; margin-bottom: 20px; }
   .card { background: #1e293b; border: 1px solid #334155; border-radius: 12px; padding: 24px; }
   .card h2 { font-size: 14px; font-weight: 600; color: #94a3b8; text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 16px; }
   .card h3 { font-size: 13px; font-weight: 600; color: #64748b; margin: 16px 0 8px; }
@@ -64,16 +75,94 @@ HTML_TEMPLATE = """
   .cat-nonreferred { background: #10b981; }
   .cat-whale { background: #f59e0b; }
   .timestamp { text-align: center; color: #475569; font-size: 12px; padding: 24px; }
+  /* AI Agent styles */
+  .ai-container { max-width: 1000px; margin: 0 auto; padding: 24px 40px; }
+  .ai-card { background: #1e293b; border: 1px solid #334155; border-radius: 12px; padding: 32px; margin-bottom: 20px; }
+  .ai-card.purple-glow { border-color: #6366f1; box-shadow: 0 0 30px rgba(99,102,241,0.15); }
+  .ai-input-group { display: flex; gap: 12px; margin-bottom: 20px; }
+  .ai-input { flex: 1; padding: 12px 16px; border-radius: 8px; border: 1px solid #334155; background: #0f172a; color: #e2e8f0; font-size: 14px; }
+  .ai-input:focus { outline: none; border-color: #6366f1; }
+  .ai-btn { padding: 12px 24px; border-radius: 8px; border: none; font-size: 14px; font-weight: 600; cursor: pointer; background: linear-gradient(135deg, #8b5cf6, #6366f1); color: white; transition: all 0.2s; }
+  .ai-btn:hover { transform: translateY(-1px); box-shadow: 0 4px 12px rgba(99,102,241,0.4); }
+  .ai-btn:disabled { opacity: 0.5; cursor: not-allowed; transform: none; box-shadow: none; }
+  .ai-report { background: #0f172a; border: 1px solid #334155; border-radius: 8px; padding: 24px; line-height: 1.7; font-size: 15px; }
+  .ai-report h1 { font-size: 22px; color: #f8fafc; margin: 24px 0 12px; }
+  .ai-report h2 { font-size: 18px; color: #c4b5fd; margin: 20px 0 10px; border-bottom: 1px solid #334155; padding-bottom: 6px; }
+  .ai-report h3 { font-size: 15px; color: #a78bfa; margin: 16px 0 8px; }
+  .ai-report p { margin: 8px 0; color: #cbd5e1; }
+  .ai-report ul, .ai-report ol { margin: 8px 0 8px 24px; color: #cbd5e1; }
+  .ai-report li { margin: 4px 0; }
+  .ai-report strong { color: #f8fafc; }
+  .ai-report code { background: #334155; padding: 2px 6px; border-radius: 4px; font-size: 13px; }
+  .spinner { display: inline-block; width: 20px; height: 20px; border: 3px solid #334155; border-top: 3px solid #8b5cf6; border-radius: 50%; animation: spin 0.8s linear infinite; margin-right: 8px; vertical-align: middle; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  .pulse { animation: pulse 2s ease-in-out infinite; }
+  @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.5; } }
 </style>
 </head>
 <body>
 <div class="header">
-  <h1>TPV Predictions Dashboard</h1>
-  <p>UAE / UK — {{ today }}</p>
+  <div class="header-left">
+    <h1>TPV Predictions Dashboard</h1>
+    <p>UAE / UK — {{ today }}</p>
+  </div>
+  <div class="header-right">
+    <a href="/"><button class="nav-btn {{ 'nav-btn-active' if page == 'dashboard' else 'nav-btn-inactive' }}">Dashboard</button></a>
+    <a href="/agent"><button class="nav-btn {{ 'nav-btn-ai' if page == 'agent' else 'nav-btn-inactive' }}">AI Agent</button></a>
+  </div>
 </div>
-<div class="container">
 
-  <!-- Summary Cards -->
+{% if page == 'agent' %}
+<!-- AI AGENT PAGE -->
+<div class="ai-container">
+  <div class="ai-card purple-glow">
+    <h2 style="color:#c4b5fd; font-size:18px; text-transform:none; letter-spacing:0; margin-bottom:8px;">AI-Powered TPV Analysis</h2>
+    <p class="sub-text" style="margin-bottom:20px;">Claude analyzes your TPV data and generates predictions, insights, and recommendations — just like your daily workflow.</p>
+    <div class="ai-input-group">
+      <input type="password" id="api-key" class="ai-input" placeholder="Anthropic API Key (sk-ant-...)" value="{{ saved_key }}">
+      <button class="ai-btn" id="run-btn" onclick="runAgent()">Generate AI Report</button>
+    </div>
+    <div id="status" style="display:none; margin-bottom:16px; color:#a78bfa; font-size:14px;">
+      <span class="spinner"></span> <span id="status-text">Analyzing TPV data with Claude...</span>
+    </div>
+    <div id="ai-output"></div>
+  </div>
+</div>
+<script>
+async function runAgent() {
+  const key = document.getElementById('api-key').value.trim();
+  if (!key) { alert('Please enter your Anthropic API key'); return; }
+  const btn = document.getElementById('run-btn');
+  const status = document.getElementById('status');
+  const output = document.getElementById('ai-output');
+  btn.disabled = true;
+  btn.textContent = 'Analyzing...';
+  status.style.display = 'block';
+  output.innerHTML = '';
+  try {
+    const res = await fetch('/api/agent', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({api_key: key})
+    });
+    const data = await res.json();
+    if (data.error) {
+      output.innerHTML = '<div class="alert">' + data.error + '</div>';
+    } else {
+      output.innerHTML = '<div class="ai-report">' + data.html + '</div>';
+    }
+  } catch(e) {
+    output.innerHTML = '<div class="alert">Request failed: ' + e.message + '</div>';
+  }
+  btn.disabled = false;
+  btn.textContent = 'Generate AI Report';
+  status.style.display = 'none';
+}
+</script>
+
+{% else %}
+<!-- DASHBOARD PAGE -->
+<div class="container">
   <div class="grid">
     {% for r in summary %}
     <div class="card">
@@ -94,13 +183,11 @@ HTML_TEMPLATE = """
     {% endfor %}
   </div>
 
-  <!-- Combined TPV -->
   <div class="card" style="margin-bottom:20px; text-align:center;">
     <h2>Combined Daily TPV</h2>
     <div class="big-number blue">{{ combined_tpv }}</div>
   </div>
 
-  <!-- Predictions -->
   <div class="section-title">7-Day Predictions</div>
   <div class="grid">
     {% for r in predictions %}
@@ -124,7 +211,6 @@ HTML_TEMPLATE = """
     {% endfor %}
   </div>
 
-  <!-- Category Breakdown -->
   <div class="section-title">Category Breakdown</div>
   <div class="grid">
     {% for r in categories %}
@@ -157,7 +243,6 @@ HTML_TEMPLATE = """
     {% endfor %}
   </div>
 
-  <!-- Monthly History -->
   <div class="section-title">Monthly TPV History</div>
   <div class="card" style="margin-bottom:20px;">
     <table>
@@ -176,7 +261,6 @@ HTML_TEMPLATE = """
     </table>
   </div>
 
-  <!-- Model Performance -->
   <div class="section-title">Model Performance</div>
   <div class="grid">
     {% for r in model_perf %}
@@ -204,7 +288,6 @@ HTML_TEMPLATE = """
     {% endfor %}
   </div>
 
-  <!-- Alerts -->
   {% if alerts %}
   <div class="section-title">Alerts & Insights</div>
   {% for a in alerts %}
@@ -214,6 +297,7 @@ HTML_TEMPLATE = """
 
   <div class="timestamp">Report generated: {{ timestamp }}</div>
 </div>
+{% endif %}
 </body>
 </html>
 """
@@ -227,6 +311,51 @@ def fmt(val):
 
 def pct_str(val):
     return f"{'+' if val > 0 else ''}{val:.1f}%"
+
+
+@app.route("/agent")
+def agent_page():
+    today = datetime.now()
+    saved = _api_key_store.get("key", "")
+    masked = ""
+    if saved:
+        masked = saved[:10] + "..." + saved[-4:] if len(saved) > 14 else saved
+    return render_template_string(HTML_TEMPLATE,
+        page="agent", today=today.strftime("%A, %B %d, %Y"),
+        timestamp="", summary=[], combined_tpv="", predictions=[],
+        categories=[], monthly=[], model_perf=[], alerts=[],
+        saved_key=masked,
+    )
+
+
+@app.route("/api/agent", methods=["POST"])
+def api_agent():
+    data = request.get_json()
+    api_key = data.get("api_key", "").strip()
+    if not api_key:
+        return jsonify({"error": "API key is required"}), 400
+
+    # Store the key for session convenience
+    _api_key_store["key"] = api_key
+
+    try:
+        report_text = run_ai_agent(api_key=api_key)
+        if report_text.startswith("ERROR:"):
+            return jsonify({"error": report_text})
+
+        # Convert markdown to HTML
+        try:
+            html = md_lib.markdown(report_text, extensions=["extra", "nl2br"])
+        except Exception:
+            html = f"<pre>{report_text}</pre>"
+
+        # Save report
+        save_ai_report(report_text, datetime.now())
+
+        return jsonify({"html": html, "markdown": report_text})
+    except Exception as e:
+        return jsonify({"error": f"Agent error: {str(e)}"}), 500
+
 
 @app.route("/")
 def dashboard():
@@ -268,7 +397,6 @@ def dashboard():
             "proj_month": fmt(proj_month),
         })
 
-        # Predictions
         forecaster = EnsembleForecaster()
         forecaster.fit(hist["Date"], hist["Daily_TPV"])
         last_date = hist["Date"].iloc[-1]
@@ -283,7 +411,6 @@ def dashboard():
             })
         predictions_data.append({"region": region, "rows": pred_rows})
 
-        # Backtest
         stats = forecaster.get_model_stats()
         bt = {}
         if len(hist) > 60:
@@ -295,7 +422,6 @@ def dashboard():
             "slope": fmt(stats["linear_slope"]), "backtest": bt_rows,
         })
 
-        # Alerts
         avg7 = hist["Daily_TPV"].tail(7).mean()
         avg30 = hist["Daily_TPV"].tail(30).mean()
         if latest["Daily_TPV"] > avg7 * 1.2:
@@ -308,7 +434,6 @@ def dashboard():
         elif growth < -15:
             alerts.append(f"{region}: Growth deceleration — 7d avg is {abs(growth):.0f}% below 30d avg")
 
-    # Categories
     for region in REGIONS:
         try:
             cat_df = load_category_data(region)
@@ -339,7 +464,6 @@ def dashboard():
         except Exception:
             pass
 
-    # Monthly
     monthly_df = load_monthly_summary()
     monthly = []
     for _, row in monthly_df.tail(8).iterrows():
@@ -351,6 +475,7 @@ def dashboard():
     combined = sum(float(s["tpv"].replace("M","").replace("K","").replace(",","")) * (1e6 if "M" in s["tpv"] else 1e3 if "K" in s["tpv"] else 1) for s in summary)
 
     return render_template_string(HTML_TEMPLATE,
+        page="dashboard",
         today=today.strftime("%A, %B %d, %Y"),
         timestamp=today.strftime("%Y-%m-%d %H:%M:%S"),
         summary=summary,
@@ -360,6 +485,7 @@ def dashboard():
         monthly=monthly,
         model_perf=model_perf,
         alerts=alerts,
+        saved_key="",
     )
 
 if __name__ == "__main__":

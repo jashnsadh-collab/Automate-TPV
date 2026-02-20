@@ -1,7 +1,19 @@
 import numpy as np
 import pandas as pd
 from sklearn.linear_model import LinearRegression
-from config import ENSEMBLE_WEIGHTS
+try:
+    from config.settings import settings
+    ENSEMBLE_WEIGHTS = {
+        "linear": 0.25,
+        "wma": 0.35,
+        "seasonal_linear": 0.40,
+    }
+except ImportError:
+    ENSEMBLE_WEIGHTS = {
+        "linear": 0.25,
+        "wma": 0.35,
+        "seasonal_linear": 0.40,
+    }
 
 
 def _date_to_ordinal(dates: pd.Series) -> np.ndarray:
