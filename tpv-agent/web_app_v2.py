@@ -18,6 +18,7 @@ from flask import Flask, render_template_string, jsonify, request
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
+from config.settings import settings
 from agents.tpv_agent import TPVAgent
 from shared.schemas import DailyReport
 
@@ -81,6 +82,28 @@ tr:hover td{background:#334155}
 .mult .val{color:#a78bfa;font-weight:600}
 .bus{font-size:12px;color:#475569;padding:6px 0}
 .ts{text-align:center;color:#475569;font-size:11px;padding:20px}
+.fx-form{display:flex;gap:12px;align-items:center;margin-bottom:16px;flex-wrap:wrap}
+.fx-form label{font-size:12px;color:#94a3b8;font-weight:500}
+.fx-form input{background:#0f172a;border:1px solid #475569;color:#f8fafc;padding:6px 12px;border-radius:6px;font-size:14px;width:120px}
+.fx-form input:focus{outline:none;border-color:#6366f1}
+.fx-form .btn{margin-left:8px}
+.fx-tab-bar{display:flex;gap:2px;margin-bottom:16px}
+.fx-tab{padding:8px 20px;background:#1e293b;border:1px solid #334155;border-radius:8px 8px 0 0;font-size:13px;font-weight:600;color:#94a3b8;cursor:pointer;border-bottom:none}
+.fx-tab.active{background:#334155;color:#f8fafc;border-color:#6366f1}
+.fx-table{width:100%;border-collapse:collapse;font-size:12px}
+.fx-table th{text-align:center;padding:6px 8px;color:#94a3b8;font-weight:500;border-bottom:1px solid #334155;font-size:10px;text-transform:uppercase;position:sticky;top:0;background:#1e293b}
+.fx-table td{text-align:center;padding:6px 8px;border-bottom:1px solid rgba(51,65,85,.4);color:#e2e8f0;font-variant-numeric:tabular-nums}
+.fx-table tr:hover td{background:rgba(99,102,241,.08)}
+.fx-hi{color:#34d399;font-weight:600}.fx-lo{color:#f87171;font-weight:600}.fx-base{color:#fbbf24;font-weight:700;background:rgba(251,191,36,.06)}
+.fx-date-hdr{background:#0f172a;font-weight:700;color:#a78bfa;text-align:left;padding:8px 10px;border-top:2px solid #6366f1}
+.fx-bps{font-weight:600;font-size:11px}
+.fx-bps.pos{color:#34d399}.fx-bps.neg{color:#f87171}.fx-bps.zero{color:#fbbf24}
+.fx-card{background:#1e293b;border:1px solid #334155;border-radius:0 10px 10px 10px;padding:16px;max-height:600px;overflow-y:auto}
+.fx-summary{display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:10px;margin-bottom:16px}
+.fx-stat{background:#0f172a;border:1px solid #334155;border-radius:8px;padding:12px;text-align:center}
+.fx-stat .label{font-size:10px;color:#94a3b8;text-transform:uppercase;margin-bottom:4px}
+.fx-stat .val{font-size:20px;font-weight:700;color:#f8fafc}
+.fx-stat .sub{font-size:11px;color:#64748b;margin-top:2px}
 </style>
 </head>
 <body>
@@ -245,6 +268,97 @@ tr:hover td{background:#334155}
   {% endfor %}
   {% endif %}
 
+  <!-- FX-Rate-Sensitive Predictions -->
+  {% if report.fx_predictions %}
+  <div class="sec">FX-Rate-Sensitive Predictions (BPS Scenarios)</div>
+
+  <!-- FX Rate Input Form -->
+  <form class="fx-form" action="/api/reforecast-fx" method="POST">
+    {% for region, pred in report.fx_predictions.items() %}
+    <div>
+      <label>{{ region }} FX Rate ({{ pred.currency_pair }})</label><br>
+      <input type="number" step="0.01" name="fx_{{ region }}" value="{{ pred.base_fx_rate }}" placeholder="{{ pred.base_fx_rate }}">
+    </div>
+    {% endfor %}
+    <button class="btn btn-purple" type="submit">Update FX & Re-forecast</button>
+  </form>
+
+  <!-- Region tabs -->
+  {% for region, pred in report.fx_predictions.items() %}
+  <div style="margin-bottom:24px">
+    <div style="display:flex;align-items:center;gap:12px;margin-bottom:8px">
+      <h3 style="font-size:16px;font-weight:700;color:#f8fafc">{{ region }}</h3>
+      <span class="bd bd-b">{{ pred.currency_pair }}</span>
+      <span style="font-size:12px;color:#94a3b8">Base Rate: <strong style="color:#fbbf24">{{ pred.base_fx_rate }}</strong></span>
+    </div>
+
+    <!-- Summary stats -->
+    <div class="fx-summary">
+      {% if pred.prediction_blocks %}
+      {% set first_block = pred.prediction_blocks[0] %}
+      <div class="fx-stat">
+        <div class="label">Base TPV (BPS=0)</div>
+        <div class="val">{{ fmt(first_block.base_tpv) }}</div>
+        <div class="sub">{{ first_block.prediction_date }}</div>
+      </div>
+      <div class="fx-stat">
+        <div class="label">Base TU</div>
+        <div class="val">{{ '{:,}'.format(first_block.base_tu) }}</div>
+        <div class="sub">Transaction Users</div>
+      </div>
+      <div class="fx-stat">
+        <div class="label">Base ARPU</div>
+        <div class="val">{{ fmt(first_block.base_arpu) }}</div>
+        <div class="sub">Avg Revenue/User</div>
+      </div>
+      {% set worst = pred.prediction_blocks[0].scenarios[0] %}
+      {% set best = pred.prediction_blocks[0].scenarios[-1] %}
+      <div class="fx-stat">
+        <div class="label">TPV Range (Day 1)</div>
+        <div class="val" style="font-size:14px"><span style="color:#f87171">{{ fmt(worst.total_tpv) }}</span> — <span style="color:#34d399">{{ fmt(best.total_tpv) }}</span></div>
+        <div class="sub">BPS -20 to +20</div>
+      </div>
+      {% endif %}
+    </div>
+
+    <!-- Predictions table -->
+    <div class="fx-card">
+      <table class="fx-table">
+        <thead>
+          <tr>
+            <th>Date</th>
+            <th>Day</th>
+            <th>BPS</th>
+            <th>FX Rate</th>
+            <th>Total TPV</th>
+            <th>Total TU</th>
+            <th>Avg ARPU</th>
+            <th>vs Base</th>
+          </tr>
+        </thead>
+        <tbody>
+        {% for block in pred.prediction_blocks %}
+          <tr><td colspan="8" class="fx-date-hdr">{{ block.prediction_date }} — {{ block.day_of_week }}</td></tr>
+          {% for s in block.scenarios %}
+          <tr{% if s.bps_change == 0 %} class="fx-base"{% endif %}>
+            <td>{{ block.prediction_date }}</td>
+            <td>{{ block.day_of_week[:3] }}</td>
+            <td><span class="fx-bps {{ 'pos' if s.bps_change > 0 else 'neg' if s.bps_change < 0 else 'zero' }}">{{ '+' if s.bps_change > 0 else '' }}{{ s.bps_change }}</span></td>
+            <td>{{ '%.4f' % s.fx_rate }}</td>
+            <td class="{{ 'fx-hi' if s.tpv_change_pct > 5 else 'fx-lo' if s.tpv_change_pct < -5 else '' }}">{{ fmt(s.total_tpv) }}</td>
+            <td>{{ '{:,}'.format(s.total_tu) }}</td>
+            <td>{{ fmt(s.avg_arpu) }}</td>
+            <td class="{{ 'fx-hi' if s.tpv_change_pct > 0 else 'fx-lo' if s.tpv_change_pct < 0 else '' }}">{{ '+' if s.tpv_change_pct > 0 else '' }}{{ '%.1f' % s.tpv_change_pct }}%</td>
+          </tr>
+          {% endfor %}
+        {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+  {% endfor %}
+  {% endif %}
+
   <!-- Bus history -->
   <div class="sec">Message Bus Activity</div>
   <div class="card">
@@ -300,6 +414,25 @@ def create_app(agent: TPVAgent) -> Flask:
         loop.run_until_complete(agent.run_daily_forecast())
         loop.close()
         return jsonify({"status": "ok", "message": "Re-forecast complete"})
+
+    @app.route("/api/reforecast-fx", methods=["POST"])
+    def reforecast_fx():
+        """Re-forecast with custom FX rates from the form."""
+        custom_rates = {}
+        for region in settings.regions:
+            val = request.form.get(f"fx_{region}")
+            if val:
+                try:
+                    custom_rates[region] = float(val)
+                except ValueError:
+                    pass
+        if custom_rates:
+            agent.set_fx_rates(custom_rates)
+        loop = asyncio.new_event_loop()
+        loop.run_until_complete(agent.run_daily_forecast())
+        loop.close()
+        from flask import redirect
+        return redirect("/")
 
     @app.route("/api/report")
     def api_report():

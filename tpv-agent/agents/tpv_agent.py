@@ -49,6 +49,7 @@ from shared.schemas import (
     DailyTPVForecast,
     DeviationAlert,
     ForecastRow,
+    FXRegionPrediction,
     GrowthAlert,
     ModelPerformance,
     MultiplierDetail,
@@ -56,6 +57,7 @@ from shared.schemas import (
     RegionSummary,
     ReforecastTrigger,
 )
+from agents.fx_prediction_engine import FXScenarioEngine
 from data_loader import (
     get_historical_region,
     load_category_data,
@@ -381,8 +383,10 @@ class TPVAgent:
         self.engine = TPVForecastEngine()
         self.splitter = CategorySplitter()
         self.detector = AnomalyDetector()
+        self.fx_engine = FXScenarioEngine()
         self._running = False
         self._last_report: Optional[DailyReport] = None
+        self._custom_fx_rates: Dict[str, float] = {}  # user-provided FX rates
 
     # ── Publish helpers ────────────────────────────────────────────────────
 
@@ -610,6 +614,22 @@ class TPVAgent:
                 "total_tpv": round(float(row["Total_TPV"]), 2),
             })
 
+        # --- FX-Rate-Sensitive Predictions ---
+        logger.info("  Generating FX-rate-sensitive predictions...")
+        fx_predictions = self.fx_engine.generate_all_regions(
+            custom_fx_rates=self._custom_fx_rates,
+            start_date=target_date + timedelta(days=1),
+        )
+
+        # Export to Excel
+        output_dir = settings.output_dir
+        os.makedirs(output_dir, exist_ok=True)
+        excel_path = os.path.join(
+            output_dir, f"FX_Predictions_{target_date.strftime('%Y-%m-%d')}.xlsx"
+        )
+        self.fx_engine.export_to_excel(fx_predictions, excel_path)
+        logger.info("  FX predictions exported to %s", excel_path)
+
         report = DailyReport(
             business_date=target_date,
             summaries=summaries,
@@ -618,6 +638,7 @@ class TPVAgent:
             model_performance=model_perfs,
             alerts=all_alerts,
             monthly_history=monthly_hist,
+            fx_predictions={k: v for k, v in fx_predictions.items()},
         )
 
         self._last_report = report
@@ -676,6 +697,11 @@ class TPVAgent:
 
     def get_last_report(self) -> Optional[DailyReport]:
         return self._last_report
+
+    def set_fx_rates(self, rates: Dict[str, float]) -> None:
+        """Set custom FX rates for next forecast (e.g. {'UAE': 24.70, 'UK': 123.8})."""
+        self._custom_fx_rates = rates
+        logger.info("Custom FX rates set: %s", rates)
 
     async def trigger_reforecast(self, reason: str = "manual") -> None:
         trigger = ReforecastTrigger(

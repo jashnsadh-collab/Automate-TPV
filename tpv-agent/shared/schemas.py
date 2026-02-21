@@ -196,3 +196,35 @@ class DailyReport(BaseModel):
     model_performance: List[ModelPerformance]
     alerts: List[Dict[str, Any]]
     monthly_history: List[Dict[str, Any]]
+    fx_predictions: Optional[Dict[str, "FXRegionPrediction"]] = None
+
+
+# ── FX-Rate-Sensitive Prediction schemas ──────────────────────────────────
+
+class FXScenario(BaseModel):
+    """Single FX rate scenario prediction."""
+    bps_change: int = Field(description="Basis point change from base rate (-20 to +20)")
+    fx_rate: float = Field(description="FX rate at this scenario")
+    total_tpv: Decimal = Field(description="Predicted Total TPV")
+    total_tu: int = Field(description="Predicted Transaction Users")
+    avg_arpu: Decimal = Field(description="Average Revenue Per User")
+    tpv_change_pct: float = Field(description="% change from base (BPS=0) scenario")
+
+
+class FXPredictionBlock(BaseModel):
+    """All FX scenarios for a single prediction date."""
+    prediction_date: date
+    day_of_week: str
+    scenarios: List[FXScenario]
+    base_tpv: Decimal = Field(description="TPV at BPS=0")
+    base_tu: int = Field(description="TU at BPS=0")
+    base_arpu: Decimal = Field(description="ARPU at BPS=0")
+
+
+class FXRegionPrediction(BaseModel):
+    """Complete FX prediction for a region."""
+    region: Region
+    base_fx_rate: float = Field(description="Base FX rate used (at BPS=0)")
+    currency_pair: str = Field(description="e.g. AED/USD or GBP/USD")
+    prediction_blocks: List[FXPredictionBlock]
+    generated_at: datetime = Field(default_factory=datetime.utcnow)
