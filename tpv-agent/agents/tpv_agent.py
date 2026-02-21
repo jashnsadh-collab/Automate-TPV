@@ -676,18 +676,24 @@ class TPVAgent:
 
     async def _daily_scheduler(self) -> None:
         """
-        Fire daily forecast at configured hour for each region.
+        Fire daily forecast at 7:30 AM IST (02:00 UTC) every morning.
         On startup: run immediately if past scheduled time.
         """
         while self._running:
             now = datetime.utcnow()
-            # Next run: tomorrow at 06:00 UTC
-            target = now.replace(hour=6, minute=0, second=0, microsecond=0)
+            # Next run: 02:00 UTC = 7:30 AM IST
+            target = now.replace(hour=2, minute=0, second=0, microsecond=0)
             if now >= target:
                 target += timedelta(days=1)
 
             wait_s = (target - now).total_seconds()
-            logger.info("Next scheduled forecast at %s UTC (in %.0f s)", target, wait_s)
+            local_time = target + timedelta(hours=5, minutes=30)
+            logger.info(
+                "Next scheduled forecast at %s UTC / %s IST (in %.0f s)",
+                target.strftime("%Y-%m-%d %H:%M"),
+                local_time.strftime("%Y-%m-%d %H:%M"),
+                wait_s,
+            )
             await asyncio.sleep(wait_s)
 
             # Run forecast for both regions
