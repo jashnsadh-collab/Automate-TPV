@@ -135,7 +135,10 @@ class Settings:
 
     def __post_init__(self):
         parent = os.path.dirname(self.project_dir)
-        self.data_file = os.path.join(parent, "TPV_Projections_UAE_UK.xlsx")
+        # Check bundled data/ folder first (for cloud deployment), then parent dir (local)
+        bundled = os.path.join(self.project_dir, "data", "TPV_Projections_UAE_UK.xlsx")
+        local = os.path.join(parent, "TPV_Projections_UAE_UK.xlsx")
+        self.data_file = bundled if os.path.exists(bundled) else local
         self.output_dir = os.path.join(self.project_dir, "output")
 
 
