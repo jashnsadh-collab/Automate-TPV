@@ -205,6 +205,7 @@ class FXScenario(BaseModel):
     """Single FX rate scenario prediction."""
     bps_change: int = Field(description="Basis point change from base rate (-20 to +20)")
     fx_rate: float = Field(description="FX rate at this scenario")
+    usdinr_rate: float = Field(description="USD/INR cross-rate at this scenario")
     total_tpv: Decimal = Field(description="Predicted Total TPV")
     total_tu: int = Field(description="Predicted Transaction Users")
     avg_arpu: Decimal = Field(description="Average Revenue Per User")
@@ -225,6 +226,7 @@ class FXRegionPrediction(BaseModel):
     """Complete FX prediction for a region."""
     region: Region
     base_fx_rate: float = Field(description="Base FX rate used (at BPS=0)")
+    base_usdinr: float = Field(description="Base USD/INR rate at BPS=0")
     currency_pair: str = Field(description="e.g. AED/USD or GBP/USD")
     prediction_blocks: List[FXPredictionBlock]
     generated_at: datetime = Field(default_factory=datetime.utcnow)

@@ -387,6 +387,7 @@ class TPVAgent:
         self._running = False
         self._last_report: Optional[DailyReport] = None
         self._custom_fx_rates: Dict[str, float] = {}  # user-provided FX rates
+        self._custom_usdinr: Optional[float] = None   # user-provided USD/INR rate
 
     # ── Publish helpers ────────────────────────────────────────────────────
 
@@ -618,7 +619,8 @@ class TPVAgent:
         logger.info("  Generating FX-rate-sensitive predictions...")
         fx_predictions = self.fx_engine.generate_all_regions(
             custom_fx_rates=self._custom_fx_rates,
-            start_date=target_date + timedelta(days=1),
+            custom_usdinr=self._custom_usdinr,
+            start_date=target_date,
         )
 
         # Export to Excel
@@ -704,10 +706,12 @@ class TPVAgent:
     def get_last_report(self) -> Optional[DailyReport]:
         return self._last_report
 
-    def set_fx_rates(self, rates: Dict[str, float]) -> None:
+    def set_fx_rates(self, rates: Dict[str, float], usdinr: Optional[float] = None) -> None:
         """Set custom FX rates for next forecast (e.g. {'UAE': 24.70, 'UK': 123.8})."""
         self._custom_fx_rates = rates
-        logger.info("Custom FX rates set: %s", rates)
+        if usdinr is not None:
+            self._custom_usdinr = usdinr
+        logger.info("Custom FX rates set: %s  USD/INR: %s", rates, usdinr)
 
     async def trigger_reforecast(self, reason: str = "manual") -> None:
         trigger = ReforecastTrigger(

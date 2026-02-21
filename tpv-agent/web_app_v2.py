@@ -154,6 +154,104 @@ tr:hover td{background:#334155}
     <div class="big b">{{ combined }}</div>
   </div>
 
+  <!-- FX-Rate-Sensitive Predictions (moved to top) -->
+  {% if report.fx_predictions %}
+  <div class="sec">FX-Rate-Sensitive Predictions (BPS Scenarios) — 7-Day from Today</div>
+
+  <!-- FX Rate Input Form -->
+  <form class="fx-form" action="/api/reforecast-fx" method="POST">
+    {% for region, pred in report.fx_predictions.items() %}
+    <div>
+      <label>{{ region }} FX Rate ({{ pred.currency_pair }})</label><br>
+      <input type="number" step="0.01" name="fx_{{ region }}" value="{{ pred.base_fx_rate }}" placeholder="{{ pred.base_fx_rate }}">
+    </div>
+    {% endfor %}
+    <div>
+      <label>USD/INR Rate</label><br>
+      <input type="number" step="0.01" name="fx_USDINR" value="{{ report.fx_predictions.values()|first|attr('base_usdinr') }}" placeholder="86.50">
+    </div>
+    <button class="btn btn-purple" type="submit">Update FX & Re-forecast</button>
+  </form>
+
+  <!-- Region tabs -->
+  {% for region, pred in report.fx_predictions.items() %}
+  <div style="margin-bottom:24px">
+    <div style="display:flex;align-items:center;gap:12px;margin-bottom:8px">
+      <h3 style="font-size:16px;font-weight:700;color:#f8fafc">{{ region }}</h3>
+      <span class="bd bd-b">{{ pred.currency_pair }}</span>
+      <span style="font-size:12px;color:#94a3b8">Base Rate: <strong style="color:#fbbf24">{{ pred.base_fx_rate }}</strong></span>
+      <span class="bd bd-y">USD/INR: {{ pred.base_usdinr }}</span>
+    </div>
+
+    <!-- Summary stats -->
+    <div class="fx-summary">
+      {% if pred.prediction_blocks %}
+      {% set first_block = pred.prediction_blocks[0] %}
+      <div class="fx-stat">
+        <div class="label">Base TPV (BPS=0)</div>
+        <div class="val">{{ fmt(first_block.base_tpv) }}</div>
+        <div class="sub">{{ first_block.prediction_date }}</div>
+      </div>
+      <div class="fx-stat">
+        <div class="label">Base TU</div>
+        <div class="val">{{ '{:,}'.format(first_block.base_tu) }}</div>
+        <div class="sub">Transaction Users</div>
+      </div>
+      <div class="fx-stat">
+        <div class="label">Base ARPU</div>
+        <div class="val">{{ fmt(first_block.base_arpu) }}</div>
+        <div class="sub">Avg Revenue/User</div>
+      </div>
+      {% set worst = pred.prediction_blocks[0].scenarios[0] %}
+      {% set best = pred.prediction_blocks[0].scenarios[-1] %}
+      <div class="fx-stat">
+        <div class="label">TPV Range (Day 1)</div>
+        <div class="val" style="font-size:14px"><span style="color:#f87171">{{ fmt(worst.total_tpv) }}</span> — <span style="color:#34d399">{{ fmt(best.total_tpv) }}</span></div>
+        <div class="sub">BPS -20 to +20</div>
+      </div>
+      {% endif %}
+    </div>
+
+    <!-- Predictions table -->
+    <div class="fx-card">
+      <table class="fx-table">
+        <thead>
+          <tr>
+            <th>Date</th>
+            <th>Day</th>
+            <th>BPS</th>
+            <th>FX Rate</th>
+            <th>USD/INR</th>
+            <th>Total TPV</th>
+            <th>Total TU</th>
+            <th>Avg ARPU</th>
+            <th>vs Base</th>
+          </tr>
+        </thead>
+        <tbody>
+        {% for block in pred.prediction_blocks %}
+          <tr><td colspan="9" class="fx-date-hdr">{{ block.prediction_date }} — {{ block.day_of_week }}</td></tr>
+          {% for s in block.scenarios %}
+          <tr{% if s.bps_change == 0 %} class="fx-base"{% endif %}>
+            <td>{{ block.prediction_date }}</td>
+            <td>{{ block.day_of_week[:3] }}</td>
+            <td><span class="fx-bps {{ 'pos' if s.bps_change > 0 else 'neg' if s.bps_change < 0 else 'zero' }}">{{ '+' if s.bps_change > 0 else '' }}{{ s.bps_change }}</span></td>
+            <td>{{ '%.4f' % s.fx_rate }}</td>
+            <td style="color:#f59e0b">{{ '%.2f' % s.usdinr_rate }}</td>
+            <td class="{{ 'fx-hi' if s.tpv_change_pct > 5 else 'fx-lo' if s.tpv_change_pct < -5 else '' }}">{{ fmt(s.total_tpv) }}</td>
+            <td>{{ '{:,}'.format(s.total_tu) }}</td>
+            <td>{{ fmt(s.avg_arpu) }}</td>
+            <td class="{{ 'fx-hi' if s.tpv_change_pct > 0 else 'fx-lo' if s.tpv_change_pct < 0 else '' }}">{{ '+' if s.tpv_change_pct > 0 else '' }}{{ '%.1f' % s.tpv_change_pct }}%</td>
+          </tr>
+          {% endfor %}
+        {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+  {% endfor %}
+  {% endif %}
+
   <!-- Forecasts -->
   <div class="sec">7-Day Forecasts</div>
   <div class="g2">
@@ -268,97 +366,6 @@ tr:hover td{background:#334155}
   {% endfor %}
   {% endif %}
 
-  <!-- FX-Rate-Sensitive Predictions -->
-  {% if report.fx_predictions %}
-  <div class="sec">FX-Rate-Sensitive Predictions (BPS Scenarios)</div>
-
-  <!-- FX Rate Input Form -->
-  <form class="fx-form" action="/api/reforecast-fx" method="POST">
-    {% for region, pred in report.fx_predictions.items() %}
-    <div>
-      <label>{{ region }} FX Rate ({{ pred.currency_pair }})</label><br>
-      <input type="number" step="0.01" name="fx_{{ region }}" value="{{ pred.base_fx_rate }}" placeholder="{{ pred.base_fx_rate }}">
-    </div>
-    {% endfor %}
-    <button class="btn btn-purple" type="submit">Update FX & Re-forecast</button>
-  </form>
-
-  <!-- Region tabs -->
-  {% for region, pred in report.fx_predictions.items() %}
-  <div style="margin-bottom:24px">
-    <div style="display:flex;align-items:center;gap:12px;margin-bottom:8px">
-      <h3 style="font-size:16px;font-weight:700;color:#f8fafc">{{ region }}</h3>
-      <span class="bd bd-b">{{ pred.currency_pair }}</span>
-      <span style="font-size:12px;color:#94a3b8">Base Rate: <strong style="color:#fbbf24">{{ pred.base_fx_rate }}</strong></span>
-    </div>
-
-    <!-- Summary stats -->
-    <div class="fx-summary">
-      {% if pred.prediction_blocks %}
-      {% set first_block = pred.prediction_blocks[0] %}
-      <div class="fx-stat">
-        <div class="label">Base TPV (BPS=0)</div>
-        <div class="val">{{ fmt(first_block.base_tpv) }}</div>
-        <div class="sub">{{ first_block.prediction_date }}</div>
-      </div>
-      <div class="fx-stat">
-        <div class="label">Base TU</div>
-        <div class="val">{{ '{:,}'.format(first_block.base_tu) }}</div>
-        <div class="sub">Transaction Users</div>
-      </div>
-      <div class="fx-stat">
-        <div class="label">Base ARPU</div>
-        <div class="val">{{ fmt(first_block.base_arpu) }}</div>
-        <div class="sub">Avg Revenue/User</div>
-      </div>
-      {% set worst = pred.prediction_blocks[0].scenarios[0] %}
-      {% set best = pred.prediction_blocks[0].scenarios[-1] %}
-      <div class="fx-stat">
-        <div class="label">TPV Range (Day 1)</div>
-        <div class="val" style="font-size:14px"><span style="color:#f87171">{{ fmt(worst.total_tpv) }}</span> — <span style="color:#34d399">{{ fmt(best.total_tpv) }}</span></div>
-        <div class="sub">BPS -20 to +20</div>
-      </div>
-      {% endif %}
-    </div>
-
-    <!-- Predictions table -->
-    <div class="fx-card">
-      <table class="fx-table">
-        <thead>
-          <tr>
-            <th>Date</th>
-            <th>Day</th>
-            <th>BPS</th>
-            <th>FX Rate</th>
-            <th>Total TPV</th>
-            <th>Total TU</th>
-            <th>Avg ARPU</th>
-            <th>vs Base</th>
-          </tr>
-        </thead>
-        <tbody>
-        {% for block in pred.prediction_blocks %}
-          <tr><td colspan="8" class="fx-date-hdr">{{ block.prediction_date }} — {{ block.day_of_week }}</td></tr>
-          {% for s in block.scenarios %}
-          <tr{% if s.bps_change == 0 %} class="fx-base"{% endif %}>
-            <td>{{ block.prediction_date }}</td>
-            <td>{{ block.day_of_week[:3] }}</td>
-            <td><span class="fx-bps {{ 'pos' if s.bps_change > 0 else 'neg' if s.bps_change < 0 else 'zero' }}">{{ '+' if s.bps_change > 0 else '' }}{{ s.bps_change }}</span></td>
-            <td>{{ '%.4f' % s.fx_rate }}</td>
-            <td class="{{ 'fx-hi' if s.tpv_change_pct > 5 else 'fx-lo' if s.tpv_change_pct < -5 else '' }}">{{ fmt(s.total_tpv) }}</td>
-            <td>{{ '{:,}'.format(s.total_tu) }}</td>
-            <td>{{ fmt(s.avg_arpu) }}</td>
-            <td class="{{ 'fx-hi' if s.tpv_change_pct > 0 else 'fx-lo' if s.tpv_change_pct < 0 else '' }}">{{ '+' if s.tpv_change_pct > 0 else '' }}{{ '%.1f' % s.tpv_change_pct }}%</td>
-          </tr>
-          {% endfor %}
-        {% endfor %}
-        </tbody>
-      </table>
-    </div>
-  </div>
-  {% endfor %}
-  {% endif %}
-
   <!-- Bus history -->
   <div class="sec">Message Bus Activity</div>
   <div class="card">
@@ -426,8 +433,15 @@ def create_app(agent: TPVAgent) -> Flask:
                     custom_rates[region] = float(val)
                 except ValueError:
                     pass
-        if custom_rates:
-            agent.set_fx_rates(custom_rates)
+        usdinr = None
+        usdinr_val = request.form.get("fx_USDINR")
+        if usdinr_val:
+            try:
+                usdinr = float(usdinr_val)
+            except ValueError:
+                pass
+        if custom_rates or usdinr:
+            agent.set_fx_rates(custom_rates, usdinr=usdinr)
         loop = asyncio.new_event_loop()
         loop.run_until_complete(agent.run_daily_forecast())
         loop.close()

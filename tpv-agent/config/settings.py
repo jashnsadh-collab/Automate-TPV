@@ -52,6 +52,10 @@ class FXConfig:
         5: 1.04, 10: 1.08, 15: 1.12, 20: 1.15,
     })
 
+    # USD/INR reference rate (cross-rate for reporting)
+    usdinr_base: float = 90.73         # Base USD/INR rate
+    usdinr_per_5bps: float = 0.10      # INR change per 5 BPS
+
 
 @dataclass
 class TPVForecastConfig:

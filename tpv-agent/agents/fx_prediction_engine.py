@@ -64,6 +64,9 @@ class FXScenarioEngine:
                 "tu_multipliers": fx_cfg.uk_tu_multipliers,
             },
         }
+        # USD/INR cross-rate config
+        self._usdinr_base = fx_cfg.usdinr_base
+        self._usdinr_per_5bps = fx_cfg.usdinr_per_5bps
 
     def _get_base_predictions(
         self, region: str, start_date: date, days: int
@@ -131,6 +134,12 @@ class FXScenarioEngine:
         offset = (bps / 5) * params["fx_per_5bps"]
         return round(base + offset, 4)
 
+    def _get_usdinr_rate(self, bps: int, custom_usdinr: Optional[float] = None) -> float:
+        """Calculate USD/INR cross-rate for a given BPS offset."""
+        base = custom_usdinr if custom_usdinr is not None else self._usdinr_base
+        offset = (bps / 5) * self._usdinr_per_5bps
+        return round(base + offset, 2)
+
     def _get_multiplier(
         self, region: str, metric: str, bps: int
     ) -> float:
@@ -164,6 +173,7 @@ class FXScenarioEngine:
         self,
         region: str,
         custom_base_fx: Optional[float] = None,
+        custom_usdinr: Optional[float] = None,
         start_date: Optional[date] = None,
         days: Optional[int] = None,
     ) -> FXRegionPrediction:
@@ -173,17 +183,19 @@ class FXScenarioEngine:
         Args:
             region: "UAE" or "UK"
             custom_base_fx: Override base FX rate (defaults to config)
-            start_date: First prediction date (defaults to tomorrow)
+            custom_usdinr: Override USD/INR rate (defaults to config)
+            start_date: First prediction date (defaults to today)
             days: Number of days to predict (defaults to config)
 
         Returns:
             FXRegionPrediction with all BPS scenarios for each date
         """
-        start_date = start_date or (date.today() + timedelta(days=1))
+        start_date = start_date or date.today()
         days = days or fx_cfg.fx_forecast_days
 
         params = self._region_params[region]
         base_fx = custom_base_fx if custom_base_fx is not None else params["base_fx"]
+        base_usdinr = custom_usdinr if custom_usdinr is not None else self._usdinr_base
 
         base_predictions = self._get_base_predictions(region, start_date, days)
         if not base_predictions:
@@ -191,6 +203,7 @@ class FXScenarioEngine:
             return FXRegionPrediction(
                 region=Region(region),
                 base_fx_rate=base_fx,
+                base_usdinr=base_usdinr,
                 currency_pair=params["currency_pair"],
                 prediction_blocks=[],
             )
@@ -201,6 +214,7 @@ class FXScenarioEngine:
 
             for bps in fx_cfg.bps_levels:
                 fx_rate = self._get_fx_rate(region, bps, custom_base_fx)
+                usdinr_rate = self._get_usdinr_rate(bps, custom_usdinr)
                 tpv_mult = self._get_multiplier(region, "tpv", bps)
                 tu_mult = self._get_multiplier(region, "tu", bps)
 
@@ -215,6 +229,7 @@ class FXScenarioEngine:
                 scenarios.append(FXScenario(
                     bps_change=bps,
                     fx_rate=fx_rate,
+                    usdinr_rate=usdinr_rate,
                     total_tpv=Decimal(str(round(scenario_tpv, 0))),
                     total_tu=scenario_tu,
                     avg_arpu=Decimal(str(round(scenario_arpu, 2))),
@@ -236,6 +251,7 @@ class FXScenarioEngine:
         return FXRegionPrediction(
             region=Region(region),
             base_fx_rate=base_fx,
+            base_usdinr=base_usdinr,
             currency_pair=params["currency_pair"],
             prediction_blocks=blocks,
         )
@@ -243,6 +259,7 @@ class FXScenarioEngine:
     def generate_all_regions(
         self,
         custom_fx_rates: Optional[Dict[str, float]] = None,
+        custom_usdinr: Optional[float] = None,
         start_date: Optional[date] = None,
     ) -> Dict[str, FXRegionPrediction]:
         """Generate FX predictions for all configured regions."""
@@ -252,7 +269,10 @@ class FXScenarioEngine:
         for region in settings.regions:
             custom_fx = custom_fx_rates.get(region)
             results[region] = self.generate_predictions(
-                region, custom_base_fx=custom_fx, start_date=start_date
+                region,
+                custom_base_fx=custom_fx,
+                custom_usdinr=custom_usdinr,
+                start_date=start_date,
             )
             logger.info(
                 "FX predictions generated for %s: %d dates x %d scenarios",
@@ -275,6 +295,7 @@ class FXScenarioEngine:
                     "Day": block.day_of_week,
                     "BPS_Change": s.bps_change,
                     "FX_Rate": s.fx_rate,
+                    "USD_INR": s.usdinr_rate,
                     "Total_TPV": float(s.total_tpv),
                     "Total_TU": s.total_tu,
                     "Avg_ARPU": float(s.avg_arpu),
