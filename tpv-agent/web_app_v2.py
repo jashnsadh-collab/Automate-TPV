@@ -558,10 +558,17 @@ tr:hover td{background:#334155}
         <h3>{{ region }} <span class="bd bd-y">{{ pred.currency_pair }}</span></h3>
 
         <!-- Summary stats for this day -->
+        {% set base_sc = block.scenarios | selectattr('bps_change', 'equalto', 0) | first %}
+        {% set base_usd = block.base_tpv|float * base_sc.fx_rate / base_sc.usdinr_rate %}
         <div class="summary-row">
           <div class="summary-item">
-            <div class="label">Base TPV</div>
+            <div class="label">Base TPV (Local)</div>
             <div class="val">{{ fmt(block.base_tpv) }}</div>
+            <div class="sub">BPS = 0</div>
+          </div>
+          <div class="summary-item">
+            <div class="label">Base TPV (USD)</div>
+            <div class="val" style="color:#60a5fa">${{ fmt(base_usd) }}</div>
             <div class="sub">BPS = 0</div>
           </div>
           <div class="summary-item">
@@ -576,9 +583,11 @@ tr:hover td{background:#334155}
           </div>
           {% set worst = block.scenarios[0] %}
           {% set best = block.scenarios[-1] %}
+          {% set worst_usd = worst.total_tpv|float * worst.fx_rate / worst.usdinr_rate %}
+          {% set best_usd = best.total_tpv|float * best.fx_rate / best.usdinr_rate %}
           <div class="summary-item">
-            <div class="label">Range</div>
-            <div class="val" style="font-size:13px"><span style="color:#f87171">{{ fmt(worst.total_tpv) }}</span> – <span style="color:#34d399">{{ fmt(best.total_tpv) }}</span></div>
+            <div class="label">USD Range</div>
+            <div class="val" style="font-size:13px"><span style="color:#f87171">${{ fmt(worst_usd) }}</span> – <span style="color:#34d399">${{ fmt(best_usd) }}</span></div>
             <div class="sub">-20 to +20 BPS</div>
           </div>
         </div>
@@ -590,7 +599,8 @@ tr:hover td{background:#334155}
               <th>BPS</th>
               <th>FX Rate</th>
               <th>USD/INR</th>
-              <th>Total TPV</th>
+              <th>TPV (Local)</th>
+              <th>TPV (USD)</th>
               <th>Total TU</th>
               <th>ARPU</th>
               <th>vs Base</th>
@@ -598,11 +608,13 @@ tr:hover td{background:#334155}
           </thead>
           <tbody>
           {% for s in block.scenarios %}
+          {% set tpv_usd = s.total_tpv|float * s.fx_rate / s.usdinr_rate %}
           <tr{% if s.bps_change == 0 %} class="fx-base"{% endif %}>
             <td><span class="fx-bps {{ 'pos' if s.bps_change > 0 else 'neg' if s.bps_change < 0 else 'zero' }}">{{ '+' if s.bps_change > 0 else '' }}{{ s.bps_change }}</span></td>
             <td>{{ '%.4f' % s.fx_rate }}</td>
             <td style="color:#f59e0b">{{ '%.2f' % s.usdinr_rate }}</td>
-            <td class="{{ 'fx-hi' if s.tpv_change_pct > 5 else 'fx-lo' if s.tpv_change_pct < -5 else '' }}" style="font-weight:700">{{ fmt(s.total_tpv) }}</td>
+            <td class="{{ 'fx-hi' if s.tpv_change_pct > 5 else 'fx-lo' if s.tpv_change_pct < -5 else '' }}">{{ fmt(s.total_tpv) }}</td>
+            <td style="font-weight:700;color:#60a5fa">${{ fmt(tpv_usd) }}</td>
             <td>{{ '{:,}'.format(s.total_tu) }}</td>
             <td>{{ fmt(s.avg_arpu) }}</td>
             <td class="{{ 'fx-hi' if s.tpv_change_pct > 0 else 'fx-lo' if s.tpv_change_pct < 0 else '' }}">{{ '+' if s.tpv_change_pct > 0 else '' }}{{ '%.1f' % s.tpv_change_pct }}%</td>
