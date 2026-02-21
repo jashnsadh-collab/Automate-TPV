@@ -197,6 +197,7 @@ class DailyReport(BaseModel):
     alerts: List[Dict[str, Any]]
     monthly_history: List[Dict[str, Any]]
     fx_predictions: Optional[Dict[str, "FXRegionPrediction"]] = None
+    fx_conversion: Optional["FXConversionReport"] = None
 
 
 # ── FX-Rate-Sensitive Prediction schemas ──────────────────────────────────
@@ -230,3 +231,40 @@ class FXRegionPrediction(BaseModel):
     currency_pair: str = Field(description="e.g. AED/USD or GBP/USD")
     prediction_blocks: List[FXPredictionBlock]
     generated_at: datetime = Field(default_factory=datetime.utcnow)
+
+
+class CurrencyRow(BaseModel):
+    """Single currency's TPV converted at a given FX rate."""
+    currency: str
+    local_amount: Decimal = Field(description="TPV in local currency")
+    inr_rate: float = Field(description="INR rate used for conversion")
+    inr_amount: Decimal = Field(description="TPV converted to INR")
+
+
+class FXConversionScenario(BaseModel):
+    """One BPS scenario showing all currencies converted to INR."""
+    bps_change: int
+    usdinr: float
+    aedinr: float
+    gbpinr: float
+    eurinr: float
+    currencies: List[CurrencyRow]
+    total_inr: Decimal = Field(description="Total TPV in INR across all currencies")
+    total_usd: Decimal = Field(description="Total TPV in USD equivalent")
+    change_pct: float = Field(description="% change vs BPS=0")
+
+
+class DailyFXConversion(BaseModel):
+    """FX conversion for one day's actual TPV data."""
+    date: date
+    day_of_week: str
+    scenarios: List[FXConversionScenario]
+    base_total_inr: Decimal = Field(description="Total INR at BPS=0")
+
+
+class FXConversionReport(BaseModel):
+    """Complete FX conversion report using actual daily TPV CSV data."""
+    generated_at: datetime = Field(default_factory=datetime.utcnow)
+    csv_file: str = Field(description="Source CSV file used")
+    days: List[DailyFXConversion]
+    rates_at_base: Dict[str, float] = Field(description="Base INR rates for each currency")

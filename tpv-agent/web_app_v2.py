@@ -252,6 +252,65 @@ tr:hover td{background:#334155}
   {% endfor %}
   {% endif %}
 
+  <!-- FX Currency Conversion (Actual TPV from CSV) -->
+  {% if report.fx_conversion %}
+  <div class="sec">Currency Conversion — Actual Daily TPV to INR (BPS Scenarios)</div>
+  <div style="margin-bottom:8px;font-size:12px;color:#94a3b8">
+    Source: {{ report.fx_conversion.csv_file | basename }} &nbsp;|&nbsp;
+    Base rates — AED/INR: <strong style="color:#fbbf24">{{ '%.4f' % report.fx_conversion.rates_at_base.AED }}</strong> &nbsp;
+    GBP/INR: <strong style="color:#fbbf24">{{ '%.4f' % report.fx_conversion.rates_at_base.GBP }}</strong> &nbsp;
+    EUR/INR: <strong style="color:#fbbf24">{{ '%.4f' % report.fx_conversion.rates_at_base.EUR }}</strong> &nbsp;
+    USD/INR: <strong style="color:#fbbf24">{{ '%.4f' % report.fx_conversion.rates_at_base.USD }}</strong>
+  </div>
+  <div class="fx-card" style="max-height:700px;margin-bottom:16px">
+    <table class="fx-table">
+      <thead>
+        <tr>
+          <th>Date</th>
+          <th>BPS</th>
+          <th>AED</th>
+          <th>AED/INR</th>
+          <th>GBP</th>
+          <th>GBP/INR</th>
+          <th>EUR</th>
+          <th>EUR/INR</th>
+          <th>USD</th>
+          <th>USD/INR</th>
+          <th>Total INR</th>
+          <th>Total USD</th>
+          <th>vs Base</th>
+        </tr>
+      </thead>
+      <tbody>
+      {% for day in report.fx_conversion.days %}
+        <tr><td colspan="13" class="fx-date-hdr">{{ day.date }} — {{ day.day_of_week }} &nbsp; <span style="font-weight:400;color:#94a3b8">Base Total INR: {{ fmt(day.base_total_inr) }}</span></td></tr>
+        {% for s in day.scenarios %}
+        <tr{% if s.bps_change == 0 %} class="fx-base"{% endif %}>
+          <td>{{ day.date }}</td>
+          <td><span class="fx-bps {{ 'pos' if s.bps_change > 0 else 'neg' if s.bps_change < 0 else 'zero' }}">{{ '+' if s.bps_change > 0 else '' }}{{ s.bps_change }}</span></td>
+          {% set aed = s.currencies | selectattr('currency', 'equalto', 'AED') | first %}
+          {% set gbp = s.currencies | selectattr('currency', 'equalto', 'GBP') | first %}
+          {% set eur = s.currencies | selectattr('currency', 'equalto', 'EUR') | first %}
+          {% set usd = s.currencies | selectattr('currency', 'equalto', 'USD') | first %}
+          <td>{% if aed %}{{ fmt(aed.local_amount) }}{% else %}-{% endif %}</td>
+          <td style="color:#94a3b8">{{ '%.4f' % s.aedinr }}</td>
+          <td>{% if gbp %}{{ fmt(gbp.local_amount) }}{% else %}-{% endif %}</td>
+          <td style="color:#94a3b8">{{ '%.4f' % s.gbpinr }}</td>
+          <td>{% if eur %}{{ fmt(eur.local_amount) }}{% else %}-{% endif %}</td>
+          <td style="color:#94a3b8">{{ '%.4f' % s.eurinr }}</td>
+          <td>{% if usd %}{{ fmt(usd.local_amount) }}{% else %}-{% endif %}</td>
+          <td style="color:#f59e0b">{{ '%.2f' % s.usdinr }}</td>
+          <td style="font-weight:700;color:#f8fafc">{{ fmt(s.total_inr) }}</td>
+          <td style="font-weight:600;color:#60a5fa">{{ fmt(s.total_usd) }}</td>
+          <td class="{{ 'fx-hi' if s.change_pct > 0 else 'fx-lo' if s.change_pct < 0 else '' }}">{{ '+' if s.change_pct > 0 else '' }}{{ '%.2f' % s.change_pct }}%</td>
+        </tr>
+        {% endfor %}
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% endif %}
+
   <!-- Forecasts -->
   <div class="sec">7-Day Forecasts</div>
   <div class="g2">
@@ -388,6 +447,10 @@ def create_app(agent: TPVAgent) -> Flask:
     @app.template_global()
     def fmt_val(val):
         return fmt(val)
+
+    @app.template_filter('basename')
+    def basename_filter(path):
+        return os.path.basename(path) if path else ''
 
     @app.context_processor
     def inject_helpers():

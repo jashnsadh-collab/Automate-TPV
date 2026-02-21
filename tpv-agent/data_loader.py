@@ -1,3 +1,4 @@
+import os
 import pandas as pd
 import numpy as np
 from config.settings import settings
@@ -60,3 +61,35 @@ def get_historical_daily() -> pd.DataFrame:
 def get_historical_region(region: str) -> pd.DataFrame:
     df = load_region_detail(region)
     return df[df["Type"] == "Historical"].copy()
+
+
+def load_daily_tpv_csv() -> pd.DataFrame:
+    """
+    Load the daily TPV CSV from Downloads.
+    Returns DataFrame with columns: Date, Currency, Amount
+    """
+    csv_path = settings.daily_tpv_csv
+    if not csv_path or not os.path.exists(csv_path):
+        return pd.DataFrame()
+
+    df = pd.read_csv(csv_path)
+    df.columns = ["Date", "Amount", "Currency"]
+    df["Date"] = pd.to_datetime(df["Date"])
+    df["Amount"] = df["Amount"].astype(str).str.replace(",", "").astype(float)
+    df = df.sort_values("Date").reset_index(drop=True)
+    return df
+
+
+def get_daily_tpv_by_date() -> dict:
+    """
+    Returns dict: {date_str: {currency: amount}} from the daily TPV CSV.
+    """
+    df = load_daily_tpv_csv()
+    if df.empty:
+        return {}
+
+    result = {}
+    for d, grp in df.groupby("Date"):
+        date_str = d.strftime("%Y-%m-%d")
+        result[date_str] = {row["Currency"]: row["Amount"] for _, row in grp.iterrows()}
+    return result

@@ -632,6 +632,14 @@ class TPVAgent:
         self.fx_engine.export_to_excel(fx_predictions, excel_path)
         logger.info("  FX predictions exported to %s", excel_path)
 
+        # --- FX Currency Conversion (from actual CSV data) ---
+        logger.info("  Generating FX currency conversion from CSV data...")
+        fx_conversion = self.fx_engine.generate_conversion_report()
+        if fx_conversion:
+            logger.info("  FX conversion report: %d days of data", len(fx_conversion.days))
+        else:
+            logger.info("  No CSV data available for FX conversion")
+
         report = DailyReport(
             business_date=target_date,
             summaries=summaries,
@@ -641,6 +649,7 @@ class TPVAgent:
             alerts=all_alerts,
             monthly_history=monthly_hist,
             fx_predictions={k: v for k, v in fx_predictions.items()},
+            fx_conversion=fx_conversion,
         )
 
         self._last_report = report

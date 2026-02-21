@@ -52,9 +52,13 @@ class FXConfig:
         5: 1.04, 10: 1.08, 15: 1.12, 20: 1.15,
     })
 
-    # USD/INR reference rate (cross-rate for reporting)
-    usdinr_base: float = 90.73         # Base USD/INR rate
+    # INR cross-rates (base at BPS=0)
+    usdinr_base: float = 90.73         # USD/INR rate
     usdinr_per_5bps: float = 0.10      # INR change per 5 BPS
+
+    # EUR/INR
+    eurinr_base: float = 104.00         # EUR/INR rate
+    eurinr_per_5bps: float = 0.12      # INR change per 5 BPS
 
 
 @dataclass
@@ -109,6 +113,7 @@ class Settings:
     """Top-level settings."""
     project_dir: str = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     data_file: str = ""
+    daily_tpv_csv: str = ""
     output_dir: str = ""
     web_port: int = 5050
     log_level: str = "INFO"
@@ -140,6 +145,16 @@ class Settings:
         local = os.path.join(parent, "TPV_Projections_UAE_UK.xlsx")
         self.data_file = bundled if os.path.exists(bundled) else local
         self.output_dir = os.path.join(self.project_dir, "output")
+        # Daily TPV CSV — scan Downloads for latest file
+        self._find_daily_tpv_csv()
+
+    def _find_daily_tpv_csv(self):
+        """Find the latest daily_tpv CSV in Downloads."""
+        import glob
+        downloads = os.path.expanduser("~/Downloads")
+        pattern = os.path.join(downloads, "daily_tpv_*.csv")
+        files = sorted(glob.glob(pattern), key=os.path.getmtime, reverse=True)
+        self.daily_tpv_csv = files[0] if files else ""
 
 
 settings = Settings()
