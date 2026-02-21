@@ -301,11 +301,63 @@ class FXScenarioEngine:
         offset = (bps / 5) * per_5bps
         return round(base + offset, 4)
 
+    def _build_conversion_scenarios(
+        self, currency_amounts: Dict[str, float]
+    ) -> tuple[List[FXConversionScenario], Decimal]:
+        """Build BPS scenarios for a set of currency amounts. Returns (scenarios, base_total_inr)."""
+        scenarios = []
+        base_total_inr = Decimal("0")
+
+        for bps in fx_cfg.bps_levels:
+            usdinr = self._get_inr_rate("USD", bps)
+            aedinr = self._get_inr_rate("AED", bps)
+            gbpinr = self._get_inr_rate("GBP", bps)
+            eurinr = self._get_inr_rate("EUR", bps)
+
+            currencies = []
+            total_inr = Decimal("0")
+
+            for currency, amount in currency_amounts.items():
+                inr_rate = self._get_inr_rate(currency, bps)
+                inr_amount = Decimal(str(round(amount * inr_rate, 2)))
+                total_inr += inr_amount
+                currencies.append(CurrencyRow(
+                    currency=currency,
+                    local_amount=Decimal(str(round(amount, 2))),
+                    inr_rate=inr_rate,
+                    inr_amount=inr_amount,
+                ))
+
+            total_usd = Decimal(str(round(float(total_inr) / usdinr, 2))) if usdinr > 0 else Decimal("0")
+
+            if bps == 0:
+                base_total_inr = total_inr
+
+            scenarios.append(FXConversionScenario(
+                bps_change=bps,
+                usdinr=usdinr,
+                aedinr=aedinr,
+                gbpinr=gbpinr,
+                eurinr=eurinr,
+                currencies=currencies,
+                total_inr=total_inr,
+                total_usd=total_usd,
+                change_pct=0.0,
+            ))
+
+        # Set change_pct relative to base
+        for s in scenarios:
+            if s.bps_change != 0 and base_total_inr > 0:
+                s.change_pct = round(float((s.total_inr - base_total_inr) / base_total_inr * 100), 2)
+
+        return scenarios, base_total_inr
+
     def generate_conversion_report(self) -> Optional[FXConversionReport]:
         """
         Load actual daily TPV from CSV and convert each currency to INR
         at every BPS scenario (-20 to +20).
 
+        Shows the last 7 days of data, one row per day per BPS level.
         Returns FXConversionReport with per-day, per-BPS breakdowns.
         """
         daily_data = get_daily_tpv_by_date()
@@ -323,64 +375,20 @@ class FXScenarioEngine:
             "EUR": self._get_inr_rate("EUR", 0),
         }
 
+        # Take last 7 days of data
+        sorted_dates = sorted(daily_data.keys())
+        last_7 = sorted_dates[-7:] if len(sorted_dates) >= 7 else sorted_dates
+
         days = []
-        for date_str in sorted(daily_data.keys()):
+        for date_str in last_7:
             currency_amounts = daily_data[date_str]
             dt = datetime.strptime(date_str, "%Y-%m-%d").date() if isinstance(date_str, str) else date_str
 
-            scenarios = []
-            base_total_inr = Decimal("0")
-
-            for bps in fx_cfg.bps_levels:
-                usdinr = self._get_inr_rate("USD", bps)
-                aedinr = self._get_inr_rate("AED", bps)
-                gbpinr = self._get_inr_rate("GBP", bps)
-                eurinr = self._get_inr_rate("EUR", bps)
-
-                currencies = []
-                total_inr = Decimal("0")
-
-                for currency, amount in currency_amounts.items():
-                    inr_rate = self._get_inr_rate(currency, bps)
-                    inr_amount = Decimal(str(round(amount * inr_rate, 2)))
-                    total_inr += inr_amount
-                    currencies.append(CurrencyRow(
-                        currency=currency,
-                        local_amount=Decimal(str(round(amount, 2))),
-                        inr_rate=inr_rate,
-                        inr_amount=inr_amount,
-                    ))
-
-                total_usd = Decimal(str(round(float(total_inr) / usdinr, 2))) if usdinr > 0 else Decimal("0")
-
-                if bps == 0:
-                    base_total_inr = total_inr
-
-                change_pct = float((total_inr - base_total_inr) / base_total_inr * 100) if base_total_inr > 0 and bps != 0 else 0.0
-
-                scenarios.append(FXConversionScenario(
-                    bps_change=bps,
-                    usdinr=usdinr,
-                    aedinr=aedinr,
-                    gbpinr=gbpinr,
-                    eurinr=eurinr,
-                    currencies=currencies,
-                    total_inr=total_inr,
-                    total_usd=total_usd,
-                    change_pct=round(change_pct, 2),
-                ))
-
-            # Recalculate change_pct now that we have base_total_inr
-            for s in scenarios:
-                if s.bps_change != 0 and base_total_inr > 0:
-                    s.change_pct = round(float((s.total_inr - base_total_inr) / base_total_inr * 100), 2)
-
-            from datetime import datetime as dt_cls
-            day_dt = dt_cls.strptime(date_str, "%Y-%m-%d") if isinstance(date_str, str) else date_str
+            scenarios, base_total_inr = self._build_conversion_scenarios(currency_amounts)
 
             days.append(DailyFXConversion(
-                date=day_dt.date() if hasattr(day_dt, "date") else day_dt,
-                day_of_week=day_dt.strftime("%A") if hasattr(day_dt, "strftime") else "",
+                date=dt,
+                day_of_week=dt.strftime("%A"),
                 scenarios=scenarios,
                 base_total_inr=base_total_inr,
             ))
