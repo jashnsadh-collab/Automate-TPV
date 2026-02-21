@@ -15,6 +15,9 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from config.settings import settings
 
+# Ensure output directory exists
+os.makedirs(settings.output_dir, exist_ok=True)
+
 logging.basicConfig(
     level=getattr(logging, settings.log_level),
     format="%(asctime)s  %(levelname)-8s  %(name)-24s  %(message)s",
